@@ -51,17 +51,45 @@ const (
 	CoachingNextActionContinue     = "continue_current_task"
 	CoachingNextActionCompletePlan = "complete_plan"
 	CoachingNextActionPause        = "pause"
+
+	CoachingSubmitModeChat         = "chat"
+	CoachingSubmitModeFormalAnswer = "formal_answer"
+
+	CoachingUserIntentAnswer       = "answer"
+	CoachingUserIntentAskHint      = "ask_hint"
+	CoachingUserIntentAskExplain   = "ask_explain"
+	CoachingUserIntentConfirmNext  = "confirm_next"
+	CoachingUserIntentRetryCurrent = "retry_current"
+	CoachingUserIntentSkipCurrent  = "skip_current"
+	CoachingUserIntentSmalltalk    = "smalltalk"
+	CoachingUserIntentUnclear      = "unclear"
+	CoachingUserIntentPause        = "pause"
+
+	CoachingStateActionChatOnly      = "chat_only"
+	CoachingStateActionRecordAttempt = "record_attempt"
+	CoachingStateActionAskRetry      = "ask_retry"
+	CoachingStateActionMoveNext      = "move_next"
+	CoachingStateActionStayCurrent   = "stay_current"
+	CoachingStateActionPause         = "pause"
+	CoachingStateActionComplete      = "complete"
 )
 
 type coachingSessionAgentOutput struct {
-	InputType                 string `json:"input_type"`
-	AgentMessage              string `json:"agent_message"`
-	Score                     int    `json:"score"`
-	Passed                    bool   `json:"passed"`
-	Feedback                  string `json:"feedback"`
-	NextAction                string `json:"next_action"`
-	ShouldCompleteCurrentTask bool   `json:"should_complete_current_task"`
-	ShouldPause               bool   `json:"should_pause"`
+	InputType                 string  `json:"input_type"`
+	AgentMessage              string  `json:"agent_message"`
+	VisibleMessage            string  `json:"visible_message"`
+	UserIntent                string  `json:"user_intent"`
+	StateAction               string  `json:"state_action"`
+	Confidence                float64 `json:"confidence"`
+	NeedsClarification        bool    `json:"needs_clarification"`
+	SubmitMode                string  `json:"submit_mode"`
+	Score                     int     `json:"score"`
+	Passed                    bool    `json:"passed"`
+	Feedback                  string  `json:"feedback"`
+	NextAction                string  `json:"next_action"`
+	ShouldUpdatePracticeState bool    `json:"should_update_practice_state"`
+	ShouldCompleteCurrentTask bool    `json:"should_complete_current_task"`
+	ShouldPause               bool    `json:"should_pause"`
 }
 
 func (s *Server) StartOrResumeCoachingSession(planID string, userID string) (vo.CoachingSessionDetailVO, error) {
@@ -215,6 +243,7 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 	if userInput == "" {
 		return vo.CoachingSessionDetailVO{}, fmt.Errorf("user_input is required")
 	}
+	submitMode := normalizeCoachingSubmitMode(req.SubmitMode)
 
 	var session CoachingSession
 	if err := s.db.First(&session, "session_id = ?", sessionID).Error; err != nil {
@@ -261,7 +290,7 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 	if err != nil {
 		return vo.CoachingSessionDetailVO{}, err
 	}
-	prompt := buildCoachingSessionTurnPrompt(plan, session, currentTask, tasks, turns, userInput)
+	prompt := buildCoachingSessionTurnPrompt(plan, session, currentTask, tasks, turns, userInput, submitMode)
 	inputSnapshot := marshalTraceJSON(map[string]any{
 		"session_id":        session.SessionID,
 		"interview_id":      session.InterviewID,
@@ -269,6 +298,7 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 		"current_task_id":   currentTask.TaskID,
 		"session_status":    session.Status,
 		"task_status":       currentTask.Status,
+		"submit_mode":       submitMode,
 		"recent_turn_count": len(turns),
 		"task_count":        len(tasks),
 		"user_input_length": len(userInput),
@@ -295,7 +325,7 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 		return vo.CoachingSessionDetailVO{}, fmt.Errorf("coaching session agent failed: %w", runErr)
 	}
 
-	parsed, parseErr := parseCoachingSessionAgentOutput(result.Response)
+	parsed, parseErr := parseCoachingSessionAgentOutput(result.Response, submitMode)
 	if parseErr != nil {
 		if saveErr := s.failCoachingSessionAfterAgentError(session, currentTask, userTurn, result.Response, parseErr); saveErr != nil {
 			return vo.CoachingSessionDetailVO{}, fmt.Errorf("parse coaching session output failed: %v; save failure: %w", parseErr, saveErr)
@@ -477,15 +507,24 @@ func (s *Server) ensureCoachingSessionCurrentTask(session *CoachingSession) (Coa
 
 func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task CoachingTask, userTurn CoachingSessionTurn, rawOutput string, parsed coachingSessionAgentOutput) error {
 	now := time.Now().Unix()
-	inputType := normalizeCoachingInputType(parsed.InputType)
+	inputType := parsed.InputType
+	if strings.TrimSpace(inputType) == "" {
+		inputType = CoachingTurnTypeUserAnswer
+	}
 	userTurn.TurnType = inputType
 	assistantTurnType := CoachingTurnTypeFeedback
 	if inputType == CoachingInputTypeHintRequest {
 		assistantTurnType = CoachingTurnTypeHintRequest
 	} else if inputType == CoachingInputTypeExplanationRequest {
 		assistantTurnType = CoachingTurnTypeExplanationRequest
-	} else if inputType == CoachingInputTypePause || parsed.ShouldPause {
+	} else if parsed.StateAction == CoachingStateActionChatOnly {
+		assistantTurnType = CoachingTurnTypePrompt
+	} else if parsed.StateAction == CoachingStateActionPause || parsed.ShouldPause {
 		assistantTurnType = CoachingTurnTypeStateTransition
+	}
+	assistantMessage := strings.TrimSpace(parsed.VisibleMessage)
+	if assistantMessage == "" {
+		assistantMessage = strings.TrimSpace(parsed.AgentMessage)
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -500,8 +539,8 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 			CoachingTaskID: task.TaskID,
 			Role:           CoachingTurnRoleAssistant,
 			TurnType:       assistantTurnType,
-			Content:        parsed.AgentMessage,
-			AgentAction:    parsed.NextAction,
+			Content:        assistantMessage,
+			AgentAction:    parsed.StateAction,
 			Score:          parsed.Score,
 			Feedback:       parsed.Feedback,
 			RawAgentOutput: rawOutput,
@@ -516,7 +555,37 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 		progressSummary := fmt.Sprintf("current task %d: %s", task.Sequence, task.Title)
 		completedAt := int64(0)
 
-		if inputType == CoachingInputTypeFormalAnswer {
+		advanceToNext := func(doneStatus string, summaryVerb string) error {
+			if err := tx.Model(&CoachingTask{}).
+				Where("task_id = ?", task.TaskID).
+				Updates(map[string]any{"status": doneStatus, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			nextTask, hasNext, err := firstRunnableCoachingTask(tx, session.CoachingPlanID)
+			if err != nil {
+				return err
+			}
+			if hasNext {
+				currentTaskID = nextTask.TaskID
+				nextStatus = CoachingSessionStatusWaitingUserAnswer
+				progressSummary = fmt.Sprintf("%s task %d; next task %d: %s", summaryVerb, task.Sequence, nextTask.Sequence, nextTask.Title)
+				if nextTask.Status == CoachingTaskStatusTodo {
+					if err := tx.Model(&CoachingTask{}).
+						Where("task_id = ?", nextTask.TaskID).
+						Updates(map[string]any{"status": CoachingTaskStatusInProgress, "updated_at": now}).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			currentTaskID = ""
+			nextStatus = CoachingSessionStatusCompleted
+			progressSummary = "all coaching tasks completed"
+			completedAt = now
+			return nil
+		}
+
+		if parsed.StateAction == CoachingStateActionRecordAttempt {
 			attemptIndex, err := nextCoachingAttemptIndex(tx, session.SessionID, task.TaskID)
 			if err != nil {
 				return err
@@ -547,31 +616,8 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 				return err
 			}
 			if parsed.Passed && parsed.ShouldCompleteCurrentTask {
-				if err := tx.Model(&CoachingTask{}).
-					Where("task_id = ?", task.TaskID).
-					Updates(map[string]any{"status": CoachingTaskStatusDone, "updated_at": now}).Error; err != nil {
+				if err := advanceToNext(CoachingTaskStatusDone, "completed"); err != nil {
 					return err
-				}
-				nextTask, hasNext, err := firstRunnableCoachingTask(tx, session.CoachingPlanID)
-				if err != nil {
-					return err
-				}
-				if hasNext {
-					currentTaskID = nextTask.TaskID
-					nextStatus = CoachingSessionStatusWaitingUserAnswer
-					progressSummary = fmt.Sprintf("completed task %d; next task %d: %s", task.Sequence, nextTask.Sequence, nextTask.Title)
-					if nextTask.Status == CoachingTaskStatusTodo {
-						if err := tx.Model(&CoachingTask{}).
-							Where("task_id = ?", nextTask.TaskID).
-							Updates(map[string]any{"status": CoachingTaskStatusInProgress, "updated_at": now}).Error; err != nil {
-							return err
-						}
-					}
-				} else {
-					currentTaskID = ""
-					nextStatus = CoachingSessionStatusCompleted
-					progressSummary = "all coaching tasks completed"
-					completedAt = now
 				}
 			} else {
 				nextStatus = CoachingSessionStatusNeedsRevision
@@ -583,35 +629,41 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 			}
 		}
 
-		if inputType == CoachingInputTypeSkipTask {
+		if parsed.StateAction == CoachingStateActionAskRetry {
+			nextStatus = CoachingSessionStatusNeedsRevision
+			progressSummary = fmt.Sprintf("current task %d still needs revision: %s", task.Sequence, task.Title)
 			if err := tx.Model(&CoachingTask{}).
 				Where("task_id = ?", task.TaskID).
-				Updates(map[string]any{"status": CoachingTaskStatusSkipped, "updated_at": now}).Error; err != nil {
+				Updates(map[string]any{"status": CoachingTaskStatusNeedsRevision, "updated_at": now}).Error; err != nil {
 				return err
-			}
-			nextTask, hasNext, err := firstRunnableCoachingTask(tx, session.CoachingPlanID)
-			if err != nil {
-				return err
-			}
-			if hasNext {
-				currentTaskID = nextTask.TaskID
-				progressSummary = fmt.Sprintf("skipped task %d; next task %d: %s", task.Sequence, nextTask.Sequence, nextTask.Title)
-				if nextTask.Status == CoachingTaskStatusTodo {
-					if err := tx.Model(&CoachingTask{}).
-						Where("task_id = ?", nextTask.TaskID).
-						Updates(map[string]any{"status": CoachingTaskStatusInProgress, "updated_at": now}).Error; err != nil {
-						return err
-					}
-				}
-			} else {
-				currentTaskID = ""
-				nextStatus = CoachingSessionStatusCompleted
-				progressSummary = "all coaching tasks completed"
-				completedAt = now
 			}
 		}
 
-		if inputType == CoachingInputTypePause || parsed.ShouldPause {
+		if parsed.StateAction == CoachingStateActionMoveNext {
+			if parsed.UserIntent == CoachingUserIntentSkipCurrent {
+				if err := advanceToNext(CoachingTaskStatusSkipped, "skipped"); err != nil {
+					return err
+				}
+			} else {
+				if err := advanceToNext(CoachingTaskStatusDone, "completed"); err != nil {
+					return err
+				}
+			}
+		}
+
+		if parsed.StateAction == CoachingStateActionComplete {
+			if err := tx.Model(&CoachingTask{}).
+				Where("plan_id = ? AND status IN ?", session.CoachingPlanID, runnableCoachingTaskStatuses()).
+				Updates(map[string]any{"status": CoachingTaskStatusDone, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			currentTaskID = ""
+			nextStatus = CoachingSessionStatusCompleted
+			progressSummary = "all coaching tasks completed"
+			completedAt = now
+		}
+
+		if parsed.StateAction == CoachingStateActionPause || parsed.ShouldPause {
 			nextStatus = CoachingSessionStatusPaused
 		}
 
@@ -619,7 +671,7 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 			"current_task_id":    currentTaskID,
 			"status":             nextStatus,
 			"progress_summary":   progressSummary,
-			"last_agent_message": parsed.AgentMessage,
+			"last_agent_message": assistantMessage,
 			"error_message":      "",
 			"last_active_at":     now,
 			"updated_at":         now,
@@ -669,7 +721,7 @@ func (s *Server) failCoachingSessionAfterAgentError(session CoachingSession, tas
 	})
 }
 
-func buildCoachingSessionTurnPrompt(plan CoachingPlan, session CoachingSession, currentTask CoachingTask, tasks []CoachingTask, turns []CoachingSessionTurn, userInput string) string {
+func buildCoachingSessionTurnPrompt(plan CoachingPlan, session CoachingSession, currentTask CoachingTask, tasks []CoachingTask, turns []CoachingSessionTurn, userInput string, submitMode string) string {
 	taskPayload := make([]map[string]any, 0, len(tasks))
 	for _, task := range tasks {
 		taskPayload = append(taskPayload, map[string]any{
@@ -695,36 +747,39 @@ func buildCoachingSessionTurnPrompt(plan CoachingPlan, session CoachingSession, 
 	tasksJSON, _ := json.Marshal(taskPayload)
 	turnsJSON, _ := json.Marshal(turnPayload)
 
-	return fmt.Sprintf(`You are the fixed second_round_coach agent running one step of a plan-level coaching session.
+	return fmt.Sprintf(`你是固定的 second_round_coach Agent，正在执行一次计划级辅导会话中的单轮对话。
 
-Return STRICT JSON only. Do not return Markdown, code fences, or explanations outside JSON.
-Do not write memory_items. Do not call tools. Do not change state directly; the server will persist state.
+只返回严格 JSON。不要返回 Markdown、代码块或 JSON 外解释。
+不要写入 memory_items。不要调用任何 tools。不要直接改变状态；服务端会根据 JSON 持久化状态。
 
-Classify the user input as one of:
-- formal_answer
-- hint_request
-- explanation_request
-- skip_task
-- pause
+本轮 submit_mode: %s
 
-JSON schema:
+新的 JSON schema:
 {
-  "input_type": "formal_answer|hint_request|explanation_request|skip_task|pause",
-  "agent_message": "string",
+  "visible_message": "给用户看的中文回复",
+  "user_intent": "answer|ask_hint|ask_explain|confirm_next|retry_current|skip_current|smalltalk|unclear|pause",
+  "state_action": "chat_only|record_attempt|ask_retry|move_next|stay_current|pause|complete",
+  "confidence": 0.0,
+  "needs_clarification": false,
   "score": 0,
   "passed": false,
-  "feedback": "string",
+  "feedback": "评分反馈；没有正式作答时为空字符串",
+  "input_type": "formal_answer|hint_request|explanation_request|skip_task|pause",
+  "agent_message": "兼容旧字段；内容与 visible_message 一致",
   "next_action": "ask_retry|prompt_next_task|continue_current_task|complete_plan|pause",
   "should_complete_current_task": false,
   "should_pause": false
 }
 
-Rules:
-- For hint_request or explanation_request, do not mark the task complete.
-- For formal_answer, score from 0 to 100 and provide concrete feedback.
-- Set passed=true only when the answer satisfies the current task.
-- Set should_complete_current_task=true only when this task should be marked done.
-- Keep agent_message user-facing and concise.
+规则:
+- submit_mode=chat 表示普通讨论、提示、解释、寒暄、不清楚表达或继续确认；必须使用 state_action=chat_only/stay_current/move_next/pause，不要使用 record_attempt。
+- submit_mode=formal_answer 且用户确实在提交正式答案时，使用 user_intent=answer + state_action=record_attempt，score 0-100，并给出具体 feedback。
+- “下一题吧”“继续”“好的，下一个”是 user_intent=confirm_next + state_action=move_next，不是 skip_current，也不是 skip_task。
+- 用户明确说“跳过这题/不做这题”才是 user_intent=skip_current + state_action=move_next。
+- smalltalk 和 unclear 一律 state_action=chat_only，不要推进、不打分、不记录尝试。
+- 提示或解释请求用 ask_hint/ask_explain + chat_only，保持当前题等待用户。
+- visible_message 是用户会看到的回复，中文优先，简洁、直接。
+- 兼容旧字段 input_type、agent_message、next_action，但新字段 user_intent 和 state_action 决定服务端行为。
 
 Coaching plan:
 - plan_id: %s
@@ -755,6 +810,7 @@ Recent turns JSON:
 
 User input:
 %s`,
+		submitMode,
 		plan.PlanID,
 		plan.InterviewID,
 		plan.TargetRound,
@@ -776,15 +832,172 @@ User input:
 	)
 }
 
-func parseCoachingSessionAgentOutput(raw string) (coachingSessionAgentOutput, error) {
+func parseCoachingSessionAgentOutput(raw string, submitMode string) (coachingSessionAgentOutput, error) {
 	cleaned := stripJSONFence(strings.TrimSpace(raw))
 	var parsed coachingSessionAgentOutput
 	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
 		return coachingSessionAgentOutput{}, fmt.Errorf("parse coaching session JSON: %w", err)
 	}
-	parsed.InputType = normalizeCoachingInputType(parsed.InputType)
-	parsed.NextAction = normalizeDefault(parsed.NextAction, CoachingNextActionContinue)
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(cleaned), &rawFields); err != nil {
+		return coachingSessionAgentOutput{}, fmt.Errorf("parse coaching session JSON object: %w", err)
+	}
+	parsed = coerceCoachingSessionAgentOutput(parsed, rawFields, submitMode)
 	return parsed, nil
+}
+
+func coerceCoachingSessionAgentOutput(parsed coachingSessionAgentOutput, rawFields map[string]json.RawMessage, submitMode string) coachingSessionAgentOutput {
+	submitMode = normalizeCoachingSubmitMode(submitMode)
+	_, hasUserIntent := rawFields["user_intent"]
+	_, hasStateAction := rawFields["state_action"]
+	hasNewDecisionFields := hasUserIntent || hasStateAction
+
+	legacyInputType := normalizeCoachingInputType(parsed.InputType)
+	legacyNextAction := normalizeDefault(parsed.NextAction, CoachingNextActionContinue)
+
+	parsed.SubmitMode = submitMode
+	parsed.InputType = legacyInputType
+	parsed.NextAction = legacyNextAction
+	parsed.UserIntent = normalizeCoachingUserIntent(parsed.UserIntent)
+	parsed.StateAction = normalizeCoachingStateAction(parsed.StateAction)
+	if strings.TrimSpace(parsed.VisibleMessage) == "" {
+		parsed.VisibleMessage = strings.TrimSpace(parsed.AgentMessage)
+	}
+	if strings.TrimSpace(parsed.AgentMessage) == "" {
+		parsed.AgentMessage = strings.TrimSpace(parsed.VisibleMessage)
+	}
+
+	if !hasNewDecisionFields {
+		parsed.UserIntent, parsed.StateAction = legacyCoachingIntentAndAction(legacyInputType, legacyNextAction)
+		if shouldDowngradeCoachingActionToChatOnly(submitMode, parsed.StateAction) {
+			parsed = downgradeCoachingActionToChatOnly(parsed)
+			if parsed.InputType == CoachingInputTypeFormalAnswer {
+				parsed.InputType = CoachingTurnTypeUserAnswer
+			}
+		}
+		if !isFormalCoachingAttempt(parsed) {
+			parsed = clearCoachingFormalScoringMetadata(parsed)
+		}
+		return parsed
+	}
+
+	if !hasUserIntent {
+		parsed.UserIntent, _ = legacyCoachingIntentAndAction(legacyInputType, legacyNextAction)
+	}
+	if !hasStateAction {
+		_, parsed.StateAction = legacyCoachingIntentAndAction(legacyInputType, legacyNextAction)
+	}
+	downgradedToChatOnly := shouldDowngradeCoachingActionToChatOnly(submitMode, parsed.StateAction)
+	if downgradedToChatOnly {
+		parsed = downgradeCoachingActionToChatOnly(parsed)
+	}
+	if parsed.StateAction == CoachingStateActionRecordAttempt && !isFormalCoachingAttempt(parsed) {
+		parsed = downgradeCoachingActionToChatOnly(parsed)
+		downgradedToChatOnly = true
+	}
+	if parsed.UserIntent == CoachingUserIntentSmalltalk || parsed.UserIntent == CoachingUserIntentUnclear {
+		parsed = downgradeCoachingActionToChatOnly(parsed)
+		downgradedToChatOnly = true
+	}
+	parsed.InputType = coachingInputTypeForIntent(parsed.UserIntent, legacyInputType)
+	if downgradedToChatOnly || (parsed.StateAction == CoachingStateActionChatOnly && parsed.InputType == CoachingInputTypeFormalAnswer) {
+		parsed.InputType = CoachingTurnTypeUserAnswer
+	}
+	parsed.NextAction = coachingNextActionForStateAction(parsed.StateAction, legacyNextAction)
+	if parsed.StateAction == CoachingStateActionPause {
+		parsed.ShouldPause = true
+	}
+	if !isFormalCoachingAttempt(parsed) {
+		parsed = clearCoachingFormalScoringMetadata(parsed)
+	}
+	return parsed
+}
+
+func shouldDowngradeCoachingActionToChatOnly(submitMode string, stateAction string) bool {
+	if normalizeCoachingSubmitMode(submitMode) == CoachingSubmitModeFormalAnswer {
+		return false
+	}
+	switch normalizeCoachingStateAction(stateAction) {
+	case CoachingStateActionMoveNext, CoachingStateActionPause, CoachingStateActionComplete:
+		return false
+	default:
+		return true
+	}
+}
+
+func downgradeCoachingActionToChatOnly(parsed coachingSessionAgentOutput) coachingSessionAgentOutput {
+	parsed.StateAction = CoachingStateActionChatOnly
+	return clearCoachingFormalScoringMetadata(parsed)
+}
+
+func clearCoachingFormalScoringMetadata(parsed coachingSessionAgentOutput) coachingSessionAgentOutput {
+	parsed.Score = 0
+	parsed.Passed = false
+	parsed.Feedback = ""
+	parsed.ShouldUpdatePracticeState = false
+	parsed.ShouldCompleteCurrentTask = false
+	return parsed
+}
+
+func isFormalCoachingAttempt(parsed coachingSessionAgentOutput) bool {
+	return parsed.SubmitMode == CoachingSubmitModeFormalAnswer &&
+		parsed.UserIntent == CoachingUserIntentAnswer &&
+		parsed.StateAction == CoachingStateActionRecordAttempt
+}
+
+func legacyCoachingIntentAndAction(inputType string, nextAction string) (string, string) {
+	switch normalizeCoachingInputType(inputType) {
+	case CoachingInputTypeHintRequest:
+		return CoachingUserIntentAskHint, CoachingStateActionChatOnly
+	case CoachingInputTypeExplanationRequest:
+		return CoachingUserIntentAskExplain, CoachingStateActionChatOnly
+	case CoachingInputTypeSkipTask:
+		return CoachingUserIntentSkipCurrent, CoachingStateActionMoveNext
+	case CoachingInputTypePause:
+		return CoachingUserIntentPause, CoachingStateActionPause
+	case CoachingInputTypeFormalAnswer:
+		if normalizeDefault(nextAction, CoachingNextActionContinue) == CoachingNextActionCompletePlan {
+			return CoachingUserIntentAnswer, CoachingStateActionRecordAttempt
+		}
+		return CoachingUserIntentAnswer, CoachingStateActionRecordAttempt
+	default:
+		return CoachingUserIntentAnswer, CoachingStateActionRecordAttempt
+	}
+}
+
+func coachingInputTypeForIntent(userIntent string, fallback string) string {
+	switch normalizeCoachingUserIntent(userIntent) {
+	case CoachingUserIntentAskHint:
+		return CoachingInputTypeHintRequest
+	case CoachingUserIntentAskExplain:
+		return CoachingInputTypeExplanationRequest
+	case CoachingUserIntentSkipCurrent:
+		return CoachingInputTypeSkipTask
+	case CoachingUserIntentPause:
+		return CoachingInputTypePause
+	case CoachingUserIntentAnswer:
+		return CoachingInputTypeFormalAnswer
+	default:
+		if fallback == CoachingInputTypeHintRequest || fallback == CoachingInputTypeExplanationRequest || fallback == CoachingInputTypePause {
+			return fallback
+		}
+		return CoachingTurnTypeUserAnswer
+	}
+}
+
+func coachingNextActionForStateAction(stateAction string, fallback string) string {
+	switch normalizeCoachingStateAction(stateAction) {
+	case CoachingStateActionRecordAttempt:
+		return fallback
+	case CoachingStateActionAskRetry:
+		return CoachingNextActionAskRetry
+	case CoachingStateActionMoveNext, CoachingStateActionComplete:
+		return CoachingNextActionPromptNext
+	case CoachingStateActionPause:
+		return CoachingNextActionPause
+	default:
+		return CoachingNextActionContinue
+	}
 }
 
 func coachingSessionTraceActions(parsed coachingSessionAgentOutput) []string {
@@ -793,16 +1006,20 @@ func coachingSessionTraceActions(parsed coachingSessionAgentOutput) []string {
 		"recorded coaching_session assistant turn",
 		"updated coaching_session state",
 	}
-	if parsed.InputType == CoachingInputTypeFormalAnswer {
+	if parsed.StateAction == CoachingStateActionRecordAttempt {
 		actions = append(actions, "recorded coaching_task_attempt", "updated practice_states")
 		if parsed.Passed && parsed.ShouldCompleteCurrentTask {
 			actions = append(actions, "marked coaching_task done")
 		}
 	}
-	if parsed.InputType == CoachingInputTypeSkipTask {
-		actions = append(actions, "marked coaching_task skipped")
+	if parsed.StateAction == CoachingStateActionMoveNext {
+		if parsed.UserIntent == CoachingUserIntentSkipCurrent {
+			actions = append(actions, "marked coaching_task skipped")
+		} else {
+			actions = append(actions, "marked coaching_task done")
+		}
 	}
-	if parsed.ShouldPause || parsed.InputType == CoachingInputTypePause {
+	if parsed.ShouldPause || parsed.StateAction == CoachingStateActionPause {
 		actions = append(actions, "paused coaching_session")
 	}
 	return actions
@@ -810,11 +1027,7 @@ func coachingSessionTraceActions(parsed coachingSessionAgentOutput) []string {
 
 func firstRunnableCoachingTask(db *gorm.DB, planID string) (CoachingTask, bool, error) {
 	var task CoachingTask
-	err := db.Where("plan_id = ? AND status IN ?", planID, []string{
-		CoachingTaskStatusInProgress,
-		CoachingTaskStatusNeedsRevision,
-		CoachingTaskStatusTodo,
-	}).
+	err := db.Where("plan_id = ? AND status IN ?", planID, runnableCoachingTaskStatuses()).
 		Order("case status when 'in_progress' then 0 when 'needs_revision' then 1 else 2 end, sequence asc").
 		First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -824,6 +1037,14 @@ func firstRunnableCoachingTask(db *gorm.DB, planID string) (CoachingTask, bool, 
 		return CoachingTask{}, false, err
 	}
 	return task, true, nil
+}
+
+func runnableCoachingTaskStatuses() []string {
+	return []string{
+		CoachingTaskStatusInProgress,
+		CoachingTaskStatusNeedsRevision,
+		CoachingTaskStatusTodo,
+	}
 }
 
 func nextCoachingAttemptIndex(tx *gorm.DB, sessionID string, taskID string) (int, error) {
@@ -924,6 +1145,47 @@ func normalizeCoachingInputType(inputType string) string {
 		return strings.TrimSpace(inputType)
 	default:
 		return CoachingInputTypeFormalAnswer
+	}
+}
+
+func normalizeCoachingSubmitMode(submitMode string) string {
+	switch strings.TrimSpace(submitMode) {
+	case CoachingSubmitModeFormalAnswer:
+		return CoachingSubmitModeFormalAnswer
+	default:
+		return CoachingSubmitModeChat
+	}
+}
+
+func normalizeCoachingUserIntent(userIntent string) string {
+	switch strings.TrimSpace(userIntent) {
+	case CoachingUserIntentAnswer,
+		CoachingUserIntentAskHint,
+		CoachingUserIntentAskExplain,
+		CoachingUserIntentConfirmNext,
+		CoachingUserIntentRetryCurrent,
+		CoachingUserIntentSkipCurrent,
+		CoachingUserIntentSmalltalk,
+		CoachingUserIntentUnclear,
+		CoachingUserIntentPause:
+		return strings.TrimSpace(userIntent)
+	default:
+		return CoachingUserIntentUnclear
+	}
+}
+
+func normalizeCoachingStateAction(stateAction string) string {
+	switch strings.TrimSpace(stateAction) {
+	case CoachingStateActionChatOnly,
+		CoachingStateActionRecordAttempt,
+		CoachingStateActionAskRetry,
+		CoachingStateActionMoveNext,
+		CoachingStateActionStayCurrent,
+		CoachingStateActionPause,
+		CoachingStateActionComplete:
+		return strings.TrimSpace(stateAction)
+	default:
+		return CoachingStateActionChatOnly
 	}
 }
 

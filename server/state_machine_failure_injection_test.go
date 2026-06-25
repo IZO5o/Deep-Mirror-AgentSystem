@@ -16,7 +16,7 @@ func TestFailureInjectionCoachingSessionAgentRunFailureTrace(t *testing.T) {
 	runners[agent.AgentTypeSecondRoundCoach].taskErr = errors.New("model unavailable")
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = "partial coaching output"
 
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want run error")
 	}
 
@@ -53,7 +53,7 @@ func TestFailureInjectionCoachingSessionParseFailureTrace(t *testing.T) {
 	session := startTestCoachingSession(t, s, plan.PlanID)
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = "not json"
 
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want parse error")
 	}
 	updated, err := s.GetCoachingSession(session.Session.SessionID)
@@ -86,7 +86,7 @@ func TestFailureInjectionCoachingPracticeStateUpdateRollbackTrace(t *testing.T) 
 		t.Fatalf("drop practice_states: %v", err)
 	}
 
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want practice update error")
 	}
 	updated, err := s.GetCoachingSession(session.Session.SessionID)

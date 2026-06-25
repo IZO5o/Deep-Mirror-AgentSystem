@@ -57,7 +57,7 @@ func TestSubmitCoachingSessionTurn_FormalAnswerPassedAdvancesTask(t *testing.T) 
 	firstTaskID := session.Session.CurrentTaskID
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 88, "回答达标，进入下一项。", CoachingNextActionPromptNext, false)
 
-	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会从缓存一致性、失败补偿和监控告警三个层面回答。"})
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会从缓存一致性、失败补偿和监控告警三个层面回答。", SubmitMode: CoachingSubmitModeFormalAnswer})
 	if err != nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 	}
@@ -102,13 +102,553 @@ func TestSubmitCoachingSessionTurn_FormalAnswerPassedAdvancesTask(t *testing.T) 
 	}
 }
 
+func TestSubmitCoachingSessionTurn_ChatModeDoesNotRecordAttemptEvenWhenAgentRequestsRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		stateAction string
+	}{
+		{name: "downgraded record attempt", stateAction: "record_attempt"},
+		{name: "downgraded stay current answer", stateAction: "stay_current"},
+		{name: "downgraded ask retry answer", stateAction: "ask_retry"},
+		{name: "direct chat only", stateAction: "chat_only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, runners, plan := createCoachingSessionReadyPlan(t)
+			session := startTestCoachingSession(t, s, plan.PlanID)
+			taskID := session.Session.CurrentTaskID
+			runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+				CoachingInputTypeFormalAnswer,
+				"可以，这里先给你一个思路。",
+				"answer",
+				tc.stateAction,
+				true,
+				true,
+				91,
+				"legacy formal feedback",
+				CoachingNextActionPromptNext,
+				false,
+			)
+
+			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+				UserInput:  "我觉得可以从缓存和降级说起",
+				SubmitMode: CoachingSubmitModeChat,
+			})
+			if err != nil {
+				t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+			}
+			if len(updated.Attempts) != 0 {
+				t.Fatalf("attempts length = %d, want 0 in chat submit mode", len(updated.Attempts))
+			}
+			states, err := s.ListPracticeStates("user_001", "", "")
+			if err != nil {
+				t.Fatalf("ListPracticeStates() error = %v", err)
+			}
+			if len(states) != 0 {
+				t.Fatalf("practice states length = %d, want 0 in chat submit mode", len(states))
+			}
+			if updated.Session.Status != CoachingSessionStatusWaitingUserAnswer || updated.Session.CurrentTaskID != taskID {
+				t.Fatalf("session = %#v, want waiting on same task %q", updated.Session, taskID)
+			}
+			var task CoachingTask
+			if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+				t.Fatalf("load task: %v", err)
+			}
+			if task.Status != CoachingTaskStatusInProgress {
+				t.Fatalf("task status = %q, want %q", task.Status, CoachingTaskStatusInProgress)
+			}
+			if updated.Session.LastAgentMessage != "可以，这里先给你一个思路。" {
+				t.Fatalf("last_agent_message = %q, want visible_message", updated.Session.LastAgentMessage)
+			}
+			if len(updated.Turns) != 3 {
+				t.Fatalf("turns length = %d, want start/user/assistant", len(updated.Turns))
+			}
+			if updated.Turns[1].TurnType == CoachingInputTypeFormalAnswer {
+				t.Fatalf("user turn type = %q, want non-formal type after chat-only handling", updated.Turns[1].TurnType)
+			}
+			if updated.Turns[2].Score != 0 {
+				t.Fatalf("assistant score = %d, want 0 after chat-only handling", updated.Turns[2].Score)
+			}
+			if updated.Turns[2].Feedback != "" {
+				t.Fatalf("assistant feedback = %q, want empty after chat-only handling", updated.Turns[2].Feedback)
+			}
+			if updated.Turns[2].Content != "可以，这里先给你一个思路。" {
+				t.Fatalf("assistant content = %q, want visible_message after chat-only handling", updated.Turns[2].Content)
+			}
+		})
+	}
+}
+
+func TestSubmitCoachingSessionTurn_AskRetryActionNeedsRevisionWithoutAttempt(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	taskID := session.Session.CurrentTaskID
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+		CoachingInputTypeFormalAnswer,
+		"这版还需要补充异常补偿，请重答。",
+		"retry_current",
+		"ask_retry",
+		false,
+		false,
+		64,
+		"缺少异常补偿。",
+		CoachingNextActionAskRetry,
+		false,
+	)
+
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "我会用 Redis 缓存结果。",
+		SubmitMode: CoachingSubmitModeFormalAnswer,
+	})
+	if err != nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+	}
+	if len(updated.Attempts) != 0 {
+		t.Fatalf("attempts length = %d, want 0 for ask_retry action", len(updated.Attempts))
+	}
+	states, err := s.ListPracticeStates("user_001", "", "")
+	if err != nil {
+		t.Fatalf("ListPracticeStates() error = %v", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("practice states length = %d, want 0 for ask_retry action", len(states))
+	}
+	if updated.Session.Status != CoachingSessionStatusNeedsRevision || updated.Session.CurrentTaskID != taskID {
+		t.Fatalf("session = %#v, want needs_revision on same task %q", updated.Session, taskID)
+	}
+	if !strings.Contains(updated.Session.ProgressSummary, "needs revision") {
+		t.Fatalf("progress_summary = %q, want conservative revision summary", updated.Session.ProgressSummary)
+	}
+	var task CoachingTask
+	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if task.Status != CoachingTaskStatusNeedsRevision {
+		t.Fatalf("task status = %q, want %q", task.Status, CoachingTaskStatusNeedsRevision)
+	}
+}
+
+func TestSubmitCoachingSessionTurn_CompleteActionCompletesSessionWithoutAttemptOrMemory(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	taskID := session.Session.CurrentTaskID
+	beforeMemoryItems, err := s.ListMemoryItems("user_001")
+	if err != nil {
+		t.Fatalf("ListMemoryItems() before error = %v", err)
+	}
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+		CoachingInputTypeFormalAnswer,
+		"本轮练习已完成。",
+		"answer",
+		"complete",
+		true,
+		true,
+		90,
+		"整体完成。",
+		CoachingNextActionCompletePlan,
+		false,
+	)
+
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "我已经完成全部练习。",
+		SubmitMode: CoachingSubmitModeFormalAnswer,
+	})
+	if err != nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+	}
+	if len(updated.Attempts) != 0 {
+		t.Fatalf("attempts length = %d, want 0 for complete action", len(updated.Attempts))
+	}
+	states, err := s.ListPracticeStates("user_001", "", "")
+	if err != nil {
+		t.Fatalf("ListPracticeStates() error = %v", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("practice states length = %d, want 0 for complete action", len(states))
+	}
+	afterMemoryItems, err := s.ListMemoryItems("user_001")
+	if err != nil {
+		t.Fatalf("ListMemoryItems() after error = %v", err)
+	}
+	if len(afterMemoryItems) != len(beforeMemoryItems) {
+		t.Fatalf("memory item count changed from %d to %d", len(beforeMemoryItems), len(afterMemoryItems))
+	}
+	if updated.Session.Status != CoachingSessionStatusCompleted {
+		t.Fatalf("session status = %q, want %q", updated.Session.Status, CoachingSessionStatusCompleted)
+	}
+	if updated.Session.CurrentTaskID != "" {
+		t.Fatalf("current_task_id = %q, want empty after complete action", updated.Session.CurrentTaskID)
+	}
+	if updated.Session.CompletedAt == 0 {
+		t.Fatalf("completed_at = 0, want set after complete action")
+	}
+	var task CoachingTask
+	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if task.Status != CoachingTaskStatusDone {
+		t.Fatalf("task status = %q, want %q after complete action", task.Status, CoachingTaskStatusDone)
+	}
+	var runnableTasks []CoachingTask
+	if err := s.db.Where("plan_id = ? AND status IN ?", plan.PlanID, []string{
+		CoachingTaskStatusTodo,
+		CoachingTaskStatusInProgress,
+		CoachingTaskStatusNeedsRevision,
+	}).Find(&runnableTasks).Error; err != nil {
+		t.Fatalf("query runnable tasks: %v", err)
+	}
+	if len(runnableTasks) != 0 {
+		t.Fatalf("runnable tasks after complete action = %#v, want none", runnableTasks)
+	}
+	resumed, err := s.StartOrResumeCoachingSession(plan.PlanID, "user_001")
+	if err != nil {
+		t.Fatalf("resume StartOrResumeCoachingSession() error = %v", err)
+	}
+	if resumed.Session.Status != CoachingSessionStatusCompleted || resumed.Session.CurrentTaskID != "" {
+		t.Fatalf("resumed session = %#v, want completed empty current task after completed plan", resumed.Session)
+	}
+	var activeSessionCount int64
+	if err := s.db.Model(&CoachingSession{}).
+		Where("coaching_plan_id = ? AND status IN ?", plan.PlanID, activeCoachingSessionStatuses()).
+		Count(&activeSessionCount).Error; err != nil {
+		t.Fatalf("count active sessions: %v", err)
+	}
+	if activeSessionCount != 0 {
+		t.Fatalf("active unfinished session count = %d, want 0 after complete action and resume", activeSessionCount)
+	}
+}
+
+func TestSubmitCoachingSessionTurn_DefaultChatModeDoesNotRecordLegacyFormalOutput(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	taskID := session.Session.CurrentTaskID
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 92, "回答达标，进入下一项。", CoachingNextActionPromptNext, false)
+
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput: "我会从缓存一致性、失败补偿和监控告警三个层面回答。",
+	})
+	if err != nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+	}
+	if len(updated.Attempts) != 0 {
+		t.Fatalf("attempts length = %d, want 0 when submit_mode is omitted", len(updated.Attempts))
+	}
+	states, err := s.ListPracticeStates("user_001", "", "")
+	if err != nil {
+		t.Fatalf("ListPracticeStates() error = %v", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("practice states length = %d, want 0 when submit_mode is omitted", len(states))
+	}
+	if updated.Session.Status != CoachingSessionStatusWaitingUserAnswer || updated.Session.CurrentTaskID != taskID {
+		t.Fatalf("session = %#v, want waiting on same task %q", updated.Session, taskID)
+	}
+	if len(updated.Turns) != 3 {
+		t.Fatalf("turns length = %d, want start/user/assistant", len(updated.Turns))
+	}
+	if updated.Turns[1].TurnType == CoachingInputTypeFormalAnswer {
+		t.Fatalf("user turn type = %q, want non-formal type when submit_mode is omitted", updated.Turns[1].TurnType)
+	}
+	if updated.Turns[2].Score != 0 {
+		t.Fatalf("assistant score = %d, want 0 when submit_mode is omitted", updated.Turns[2].Score)
+	}
+	if updated.Turns[2].Feedback != "" {
+		t.Fatalf("assistant feedback = %q, want empty when submit_mode is omitted", updated.Turns[2].Feedback)
+	}
+	if updated.Turns[2].Content != "回答达标，进入下一项。" {
+		t.Fatalf("assistant content = %q, want visible agent message when submit_mode is omitted", updated.Turns[2].Content)
+	}
+
+	trace := mustFindSingleTrace(t, s, AgentDecisionTraceQuery{
+		SourceType: AgentTraceSourceCoachingSession,
+		SourceID:   session.Session.SessionID,
+		StepName:   AgentTraceStepCoachingSessionTurn,
+		Status:     AgentDecisionTraceStatusSucceeded,
+	})
+	if !strings.Contains(trace.InputSnapshot, `"submit_mode":"chat"`) {
+		t.Fatalf("trace input snapshot missing default chat submit_mode: %s", trace.InputSnapshot)
+	}
+	if !strings.Contains(trace.ParsedDecision, `"submit_mode":"chat"`) || !strings.Contains(trace.ParsedDecision, `"state_action":"chat_only"`) {
+		t.Fatalf("trace parsed decision = %s, want chat/chat_only", trace.ParsedDecision)
+	}
+	assertTraceNotContainsAction(t, trace, "recorded coaching_task_attempt")
+	assertTraceNotContainsAction(t, trace, "updated practice_states")
+}
+
+func TestSubmitCoachingSessionTurn_FormalSubmitModeRecordsAttemptAndPracticeState(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+		CoachingInputTypeHintRequest,
+		"这版回答已经可以进入下一题。",
+		"answer",
+		"record_attempt",
+		true,
+		true,
+		86,
+		"结构完整，补偿路径清楚。",
+		CoachingNextActionPromptNext,
+		false,
+	)
+
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "我会先讲一致性目标，再讲缓存失效、补偿和监控。",
+		SubmitMode: CoachingSubmitModeFormalAnswer,
+	})
+	if err != nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+	}
+	if len(updated.Attempts) != 1 {
+		t.Fatalf("attempts length = %d, want 1", len(updated.Attempts))
+	}
+	if !updated.Attempts[0].Passed || updated.Attempts[0].Score != 86 {
+		t.Fatalf("attempt = %#v, want passed score 86", updated.Attempts[0])
+	}
+	states, err := s.ListPracticeStates("user_001", "补齐 Redis 缓存一致性回答", "")
+	if err != nil {
+		t.Fatalf("ListPracticeStates() error = %v", err)
+	}
+	if len(states) != 1 || states[0].MasteryScore != 86 || states[0].SourceID != updated.Attempts[0].AttemptID {
+		t.Fatalf("practice states = %#v, want source attempt score 86", states)
+	}
+	if updated.Session.LastAgentMessage != "这版回答已经可以进入下一题。" {
+		t.Fatalf("last_agent_message = %q, want visible_message", updated.Session.LastAgentMessage)
+	}
+}
+
+func TestSubmitCoachingSessionTurn_FormalSubmitModeDoesNotRecordNonAnswerIntent(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		userInput      string
+		visibleMessage string
+		userIntent     string
+		stateAction    string
+	}{
+		{
+			name:           "ask hint record attempt",
+			userInput:      "我可以要一点提示吗？",
+			visibleMessage: "可以，先给你一个答题提示。",
+			userIntent:     "ask_hint",
+			stateAction:    "record_attempt",
+		},
+		{
+			name:           "ask hint stay current",
+			userInput:      "我可以要一点提示吗？",
+			visibleMessage: "可以，先给你一个答题提示。",
+			userIntent:     "ask_hint",
+			stateAction:    "stay_current",
+		},
+		{
+			name:           "ask explain stay current",
+			userInput:      "这里能解释一下吗？",
+			visibleMessage: "可以，先解释这个点。",
+			userIntent:     "ask_explain",
+			stateAction:    "stay_current",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, runners, plan := createCoachingSessionReadyPlan(t)
+			session := startTestCoachingSession(t, s, plan.PlanID)
+			taskID := session.Session.CurrentTaskID
+			runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+				CoachingInputTypeFormalAnswer,
+				tc.visibleMessage,
+				tc.userIntent,
+				tc.stateAction,
+				true,
+				true,
+				93,
+				"评分不应保留。",
+				CoachingNextActionPromptNext,
+				false,
+			)
+
+			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+				UserInput:  tc.userInput,
+				SubmitMode: CoachingSubmitModeFormalAnswer,
+			})
+			if err != nil {
+				t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+			}
+			if len(updated.Attempts) != 0 {
+				t.Fatalf("attempts length = %d, want 0 for non-answer intent", len(updated.Attempts))
+			}
+			states, err := s.ListPracticeStates("user_001", "", "")
+			if err != nil {
+				t.Fatalf("ListPracticeStates() error = %v", err)
+			}
+			if len(states) != 0 {
+				t.Fatalf("practice states length = %d, want 0 for non-answer intent", len(states))
+			}
+			if updated.Session.Status != CoachingSessionStatusWaitingUserAnswer || updated.Session.CurrentTaskID != taskID {
+				t.Fatalf("session = %#v, want waiting on same task %q", updated.Session, taskID)
+			}
+			if len(updated.Turns) != 3 {
+				t.Fatalf("turns length = %d, want start/user/assistant", len(updated.Turns))
+			}
+			if updated.Turns[1].TurnType == CoachingInputTypeFormalAnswer {
+				t.Fatalf("user turn type = %q, want non-formal_answer for non-answer intent", updated.Turns[1].TurnType)
+			}
+			if updated.Turns[2].Score != 0 {
+				t.Fatalf("assistant score = %d, want 0 for downgraded non-answer intent", updated.Turns[2].Score)
+			}
+			if updated.Turns[2].Feedback != "" {
+				t.Fatalf("assistant feedback = %q, want empty for downgraded non-answer intent", updated.Turns[2].Feedback)
+			}
+			if updated.Turns[2].Content != tc.visibleMessage {
+				t.Fatalf("assistant content = %q, want visible_message %q", updated.Turns[2].Content, tc.visibleMessage)
+			}
+			var task CoachingTask
+			if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+				t.Fatalf("load task: %v", err)
+			}
+			if task.Status != CoachingTaskStatusInProgress {
+				t.Fatalf("task status = %q, want %q", task.Status, CoachingTaskStatusInProgress)
+			}
+		})
+	}
+}
+
+func TestSubmitCoachingSessionTurn_ConfirmNextMovesWithoutSkipOrPracticeUpdate(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	taskID := session.Session.CurrentTaskID
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+		CoachingInputTypeSkipTask,
+		"好的，我们进入下一题。",
+		"confirm_next",
+		"move_next",
+		true,
+		true,
+		87,
+		"不应保存的正式评分。",
+		CoachingNextActionPromptNext,
+		false,
+	)
+
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "好的，下一题吧",
+		SubmitMode: CoachingSubmitModeChat,
+	})
+	if err != nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+	}
+	if len(updated.Attempts) != 0 {
+		t.Fatalf("attempts length = %d, want 0", len(updated.Attempts))
+	}
+	states, err := s.ListPracticeStates("user_001", "", "")
+	if err != nil {
+		t.Fatalf("ListPracticeStates() error = %v", err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("practice states length = %d, want 0", len(states))
+	}
+	var task CoachingTask
+	if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if task.Status == CoachingTaskStatusSkipped {
+		t.Fatalf("task status = skipped, want not skipped for confirm_next")
+	}
+	if task.Status != CoachingTaskStatusDone {
+		t.Fatalf("task status = %q, want %q", task.Status, CoachingTaskStatusDone)
+	}
+	if updated.Session.Status != CoachingSessionStatusWaitingUserAnswer || updated.Session.CurrentTaskID == "" || updated.Session.CurrentTaskID == taskID {
+		t.Fatalf("session = %#v, want advanced to next task", updated.Session)
+	}
+	if len(updated.Turns) != 3 {
+		t.Fatalf("turns length = %d, want start/user/assistant", len(updated.Turns))
+	}
+	if updated.Turns[2].Score != 0 {
+		t.Fatalf("assistant score = %d, want 0 for chat move_next", updated.Turns[2].Score)
+	}
+	if updated.Turns[2].Feedback != "" {
+		t.Fatalf("assistant feedback = %q, want empty for chat move_next", updated.Turns[2].Feedback)
+	}
+	if updated.Turns[2].Content != "好的，我们进入下一题。" {
+		t.Fatalf("assistant content = %q, want visible_message preserved", updated.Turns[2].Content)
+	}
+}
+
+func TestSubmitCoachingSessionTurn_UnclearAndSmalltalkDoNotAdvance(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		intent     string
+		userInput  string
+		visibleMsg string
+	}{
+		{name: "unclear", intent: "unclear", userInput: "这个嘛", visibleMsg: "我还不确定你的意思，可以再具体一点吗？"},
+		{name: "smalltalk", intent: "smalltalk", userInput: "今天有点累", visibleMsg: "理解，我们可以慢一点来。"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, runners, plan := createCoachingSessionReadyPlan(t)
+			session := startTestCoachingSession(t, s, plan.PlanID)
+			taskID := session.Session.CurrentTaskID
+			runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+				CoachingInputTypeFormalAnswer,
+				tc.visibleMsg,
+				tc.intent,
+				"chat_only",
+				true,
+				true,
+				80,
+				"legacy formal feedback",
+				CoachingNextActionPromptNext,
+				false,
+			)
+
+			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+				UserInput:  tc.userInput,
+				SubmitMode: CoachingSubmitModeChat,
+			})
+			if err != nil {
+				t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+			}
+			if len(updated.Attempts) != 0 {
+				t.Fatalf("attempts length = %d, want 0", len(updated.Attempts))
+			}
+			states, err := s.ListPracticeStates("user_001", "", "")
+			if err != nil {
+				t.Fatalf("ListPracticeStates() error = %v", err)
+			}
+			if len(states) != 0 {
+				t.Fatalf("practice states length = %d, want 0", len(states))
+			}
+			if updated.Session.Status != CoachingSessionStatusWaitingUserAnswer || updated.Session.CurrentTaskID != taskID {
+				t.Fatalf("session = %#v, want waiting on same task %q", updated.Session, taskID)
+			}
+			var task CoachingTask
+			if err := s.db.First(&task, "task_id = ?", taskID).Error; err != nil {
+				t.Fatalf("load task: %v", err)
+			}
+			if task.Status != CoachingTaskStatusInProgress {
+				t.Fatalf("task status = %q, want %q", task.Status, CoachingTaskStatusInProgress)
+			}
+			if updated.Session.LastAgentMessage != tc.visibleMsg {
+				t.Fatalf("last_agent_message = %q, want %q", updated.Session.LastAgentMessage, tc.visibleMsg)
+			}
+			if len(updated.Turns) != 3 {
+				t.Fatalf("turns length = %d, want start/user/assistant", len(updated.Turns))
+			}
+			if updated.Turns[2].Score != 0 {
+				t.Fatalf("assistant score = %d, want 0 for %s", updated.Turns[2].Score, tc.intent)
+			}
+			if updated.Turns[2].Feedback != "" {
+				t.Fatalf("assistant feedback = %q, want empty for %s", updated.Turns[2].Feedback, tc.intent)
+			}
+			if updated.Turns[2].Content != tc.visibleMsg {
+				t.Fatalf("assistant content = %q, want visible message %q", updated.Turns[2].Content, tc.visibleMsg)
+			}
+		})
+	}
+}
+
 func TestSubmitCoachingSessionTurn_FormalAnswerFailedNeedsRevision(t *testing.T) {
 	s, runners, plan := createCoachingSessionReadyPlan(t)
 	session := startTestCoachingSession(t, s, plan.PlanID)
 	taskID := session.Session.CurrentTaskID
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, false, false, 52, "缺少异常补偿和权衡。请重答。", CoachingNextActionAskRetry, false)
 
-	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会用 Redis 做缓存。"})
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会用 Redis 做缓存。", SubmitMode: CoachingSubmitModeFormalAnswer})
 	if err != nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 	}
@@ -145,17 +685,25 @@ func TestSubmitCoachingSessionTurn_HintAndExplanationDoNotCreateAttempt(t *testi
 	for _, tc := range []struct {
 		name      string
 		inputType string
+		score     int
+		feedback  string
 	}{
 		{name: "hint", inputType: CoachingInputTypeHintRequest},
 		{name: "explanation", inputType: CoachingInputTypeExplanationRequest},
+		{name: "legacy hint with scoring metadata", inputType: CoachingInputTypeHintRequest, score: 77, feedback: "should not persist"},
+		{name: "legacy explanation with scoring metadata", inputType: CoachingInputTypeExplanationRequest, score: 81, feedback: "should not persist"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, runners, plan := createCoachingSessionReadyPlan(t)
 			session := startTestCoachingSession(t, s, plan.PlanID)
 			taskID := session.Session.CurrentTaskID
-			runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(tc.inputType, false, false, 0, "这是提示或解释。", CoachingNextActionContinue, false)
+			feedback := "这是提示或解释。"
+			if tc.feedback != "" {
+				feedback = tc.feedback
+			}
+			runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(tc.inputType, true, true, tc.score, feedback, CoachingNextActionContinue, false)
 
-			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "给我一点提示"})
+			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "给我一点提示", SubmitMode: CoachingSubmitModeChat})
 			if err != nil {
 				t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 			}
@@ -182,6 +730,15 @@ func TestSubmitCoachingSessionTurn_HintAndExplanationDoNotCreateAttempt(t *testi
 			if updated.Turns[1].TurnType != tc.inputType {
 				t.Fatalf("user turn type = %q, want %q", updated.Turns[1].TurnType, tc.inputType)
 			}
+			if updated.Turns[2].Score != 0 {
+				t.Fatalf("assistant score = %d, want 0 for chat-only %s", updated.Turns[2].Score, tc.inputType)
+			}
+			if updated.Turns[2].Feedback != "" {
+				t.Fatalf("assistant feedback = %q, want empty for chat-only %s", updated.Turns[2].Feedback, tc.inputType)
+			}
+			if updated.Turns[2].Content != feedback {
+				t.Fatalf("assistant content = %q, want visible legacy message %q", updated.Turns[2].Content, feedback)
+			}
 		})
 	}
 }
@@ -198,7 +755,7 @@ func TestPauseCancelAndIllegalSubmit(t *testing.T) {
 		t.Fatalf("paused status = %q, want paused", paused.Session.Status)
 	}
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 90, "ok", CoachingNextActionPromptNext, false)
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "answer"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "answer", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() paused error = nil, want error")
 	}
 
@@ -217,7 +774,7 @@ func TestPauseCancelAndIllegalSubmit(t *testing.T) {
 	if cancelled.Session.Status != CoachingSessionStatusCancelled {
 		t.Fatalf("cancelled status = %q, want cancelled", cancelled.Session.Status)
 	}
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "answer"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "answer", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() cancelled error = nil, want error")
 	}
 }
@@ -232,7 +789,7 @@ func TestSubmitCoachingSessionTurn_CompletedSessionCannotContinue(t *testing.T) 
 	}
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 90, "ok", CoachingNextActionCompletePlan, false)
 
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "answer"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "answer", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() completed error = nil, want error")
 	}
 }
@@ -243,7 +800,7 @@ func TestSubmitCoachingSessionTurn_ParseFailureMarksSessionFailed(t *testing.T) 
 	taskID := session.Session.CurrentTaskID
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = "not json"
 
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答", SubmitMode: CoachingSubmitModeChat}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want parse error")
 	}
 	updated, err := s.GetCoachingSession(session.Session.SessionID)
@@ -293,7 +850,7 @@ func TestSubmitCoachingSessionTurn_SkipAndPauseDoNotUpdatePracticeState(t *testi
 			session := startTestCoachingSession(t, s, plan.PlanID)
 			runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(tc.inputType, false, false, 0, "跳过或暂停。", tc.action, tc.pause)
 
-			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: tc.name})
+			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: tc.name, SubmitMode: CoachingSubmitModeChat})
 			if err != nil {
 				t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 			}
@@ -320,7 +877,7 @@ func TestSubmitCoachingSessionTurn_PracticeStateFailureRollsBackRound(t *testing
 		t.Fatalf("drop practice_states: %v", err)
 	}
 
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答"}); err == nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want practice state error")
 	}
 	updated, err := s.GetCoachingSession(session.Session.SessionID)
@@ -374,6 +931,24 @@ func sampleCoachingSessionDecisionJSON(inputType string, passed bool, complete b
 	return `{
   "input_type": "` + inputType + `",
   "agent_message": "` + feedback + `",
+  "score": ` + strconv.Itoa(score) + `,
+  "passed": ` + boolString(passed) + `,
+  "feedback": "` + feedback + `",
+  "next_action": "` + nextAction + `",
+  "should_complete_current_task": ` + boolString(complete) + `,
+  "should_pause": ` + boolString(pause) + `
+}`
+}
+
+func sampleCoachingSessionIntentDecisionJSON(inputType string, visibleMessage string, userIntent string, stateAction string, passed bool, complete bool, score int, feedback string, nextAction string, pause bool) string {
+	return `{
+  "input_type": "` + inputType + `",
+  "agent_message": "` + feedback + `",
+  "visible_message": "` + visibleMessage + `",
+  "user_intent": "` + userIntent + `",
+  "state_action": "` + stateAction + `",
+  "confidence": 0.93,
+  "needs_clarification": false,
   "score": ` + strconv.Itoa(score) + `,
   "passed": ` + boolString(passed) + `,
   "feedback": "` + feedback + `",

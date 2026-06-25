@@ -407,10 +407,10 @@ func createCompletedCoachingSessionForMemoryCandidates(t *testing.T) (*Server, m
 		sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 88, "第一项达标。", CoachingNextActionPromptNext, false),
 		sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 90, "全部达标。", CoachingNextActionCompletePlan, false),
 	}
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "first answer"}); err != nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "first answer", SubmitMode: CoachingSubmitModeFormalAnswer}); err != nil {
 		t.Fatalf("first SubmitCoachingSessionTurn() error = %v", err)
 	}
-	completed, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "second answer"})
+	completed, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "second answer", SubmitMode: CoachingSubmitModeFormalAnswer})
 	if err != nil {
 		t.Fatalf("second SubmitCoachingSessionTurn() error = %v", err)
 	}

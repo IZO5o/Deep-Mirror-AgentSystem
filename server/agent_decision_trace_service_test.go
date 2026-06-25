@@ -56,7 +56,7 @@ func TestAgentDecisionTraceCoachingSessionTurnSuccess(t *testing.T) {
 	session := startTestCoachingSession(t, s, plan.PlanID)
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 88, "trace feedback", CoachingNextActionPromptNext, false)
 
-	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "trace answer"}); err != nil {
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "trace answer", SubmitMode: CoachingSubmitModeFormalAnswer}); err != nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 	}
 

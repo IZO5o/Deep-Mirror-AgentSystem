@@ -123,7 +123,7 @@ func TestCoachingSessionControllerFlow(t *testing.T) {
 	}
 
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, false, false, 60, "需要补充异常处理。", CoachingNextActionAskRetry, false)
-	turnRec := performJSONRequest(router, http.MethodPost, "/api/coaching-sessions/"+started.Session.SessionID+"/turns", `{"user_input":"我先讲缓存一致性。"}`)
+	turnRec := performJSONRequest(router, http.MethodPost, "/api/coaching-sessions/"+started.Session.SessionID+"/turns", `{"user_input":"我先讲缓存一致性。","submit_mode":"formal_answer"}`)
 	if turnRec.Code != http.StatusOK {
 		t.Fatalf("turn status = %d, want %d; body=%s", turnRec.Code, http.StatusOK, turnRec.Body.String())
 	}

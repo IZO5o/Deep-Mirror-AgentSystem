@@ -15,7 +15,7 @@ func TestGoldenCoachingFormalAnswerPassedAdvancesTask(t *testing.T) {
 	firstTaskID := session.Session.CurrentTaskID
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 88, "回答达标，进入下一项。", CoachingNextActionPromptNext, false)
 
-	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会覆盖一致性、补偿和监控。"})
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会覆盖一致性、补偿和监控。", SubmitMode: CoachingSubmitModeFormalAnswer})
 	if err != nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 	}
@@ -53,6 +53,14 @@ func TestGoldenCoachingFormalAnswerPassedAdvancesTask(t *testing.T) {
 	if trace.RawAgentOutput == "" || !strings.Contains(trace.ParsedDecision, CoachingInputTypeFormalAnswer) {
 		t.Fatalf("trace missing raw/parsed decision: %#v", trace)
 	}
+	if !strings.Contains(trace.InputSnapshot, `"submit_mode":"formal_answer"`) {
+		t.Fatalf("trace input snapshot missing submit_mode: %s", trace.InputSnapshot)
+	}
+	for _, want := range []string{`"submit_mode":"formal_answer"`, `"user_intent":"answer"`, `"state_action":"record_attempt"`, `"visible_message":"回答达标，进入下一项。"`} {
+		if !strings.Contains(trace.ParsedDecision, want) {
+			t.Fatalf("trace parsed decision missing %s: %s", want, trace.ParsedDecision)
+		}
+	}
 	assertTraceContainsAction(t, trace, "recorded coaching_session user turn", "recorded coaching_task_attempt", "updated practice_states", "marked coaching_task done")
 }
 
@@ -62,7 +70,7 @@ func TestGoldenCoachingFormalAnswerFailedNeedsRevision(t *testing.T) {
 	taskID := session.Session.CurrentTaskID
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, false, false, 52, "缺少补偿路径，请重答。", CoachingNextActionAskRetry, false)
 
-	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会用 Redis 做缓存。"})
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "我会用 Redis 做缓存。", SubmitMode: CoachingSubmitModeFormalAnswer})
 	if err != nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 	}
@@ -111,7 +119,7 @@ func TestGoldenCoachingHintAndExplanationDoNotMutatePractice(t *testing.T) {
 			taskID := session.Session.CurrentTaskID
 			runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(tc.inputType, false, false, 0, "这是提示或解释。", CoachingNextActionContinue, false)
 
-			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "给我一点帮助"})
+			updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "给我一点帮助", SubmitMode: CoachingSubmitModeChat})
 			if err != nil {
 				t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 			}
@@ -142,7 +150,7 @@ func TestGoldenCoachingSkipTaskAdvancesWithoutPractice(t *testing.T) {
 	taskID := session.Session.CurrentTaskID
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeSkipTask, false, false, 0, "跳过当前任务。", CoachingNextActionPromptNext, false)
 
-	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "跳过这个任务"})
+	updated, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "跳过这个任务", SubmitMode: CoachingSubmitModeChat})
 	if err != nil {
 		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
 	}
