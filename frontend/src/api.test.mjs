@@ -65,9 +65,9 @@ async function main() {
 
   await assertPostBody(
     'submitCoachingTurn path/body',
-    () => api.submitCoachingTurn('session_1', { user_input: 'answer', input_type: 'formal_answer' }),
+    () => api.submitCoachingTurn('session_1', { user_input: 'answer', submit_mode: 'formal_answer' }),
     '/api/coaching-sessions/session_1/turns',
-    { user_input: 'answer', input_type: 'formal_answer' },
+    { user_input: 'answer', submit_mode: 'formal_answer' },
   )
 
   await assertPostBody(
@@ -79,9 +79,9 @@ async function main() {
 
   await assertPostBody(
     'submitMockTurn path/body',
-    () => api.submitMockTurn('mock_1', { answer: 'my answer' }),
+    () => api.submitMockTurn('mock_1', { answer: 'my answer', submit_mode: 'chat' }),
     '/api/mock-interviews/mock_1/turns',
-    { answer: 'my answer' },
+    { answer: 'my answer', submit_mode: 'chat' },
   )
 
   installFetch()

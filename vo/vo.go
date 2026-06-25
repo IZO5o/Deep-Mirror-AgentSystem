@@ -313,7 +313,8 @@ type CoachingTaskVO struct {
 
 // SubmitCoachingSessionTurnReq POST /coaching-sessions/{id}/turns 请求体
 type SubmitCoachingSessionTurnReq struct {
-	UserInput string `json:"user_input" binding:"required"`
+	UserInput  string `json:"user_input" binding:"required"`
+	SubmitMode string `json:"submit_mode,omitempty"`
 }
 
 // CoachingSessionVO 是 plan 级别二面辅导长会话
@@ -384,7 +385,8 @@ type StartMockInterviewReq struct {
 
 // SubmitMockTurnReq POST /mock-interviews/{id}/turns 请求体
 type SubmitMockTurnReq struct {
-	Answer string `json:"answer" binding:"required"`
+	Answer     string `json:"answer" binding:"required"`
+	SubmitMode string `json:"submit_mode,omitempty"`
 }
 
 // MockInterviewVO 是一次模拟面试会话
