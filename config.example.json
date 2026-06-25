@@ -1,0 +1,25 @@
+{
+  "llm_providers": {
+    "front_model": {
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.2",
+      "api_key": "",
+      "context_window": 200000
+    },
+    "back_model": {
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-5.2",
+      "api_key": "",
+      "context_window": 128000
+    }
+  },
+  "media": {
+    "storage_dir": "",
+    "ffmpeg_path": "ffmpeg"
+  },
+  "asr": {
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-transcribe",
+    "api_key": ""
+  }
+}
