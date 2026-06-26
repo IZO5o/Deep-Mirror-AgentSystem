@@ -1,23 +1,20 @@
 <template>
-  <section class="page">
-    <div class="page-header">
+  <section class="page conversation-page">
+    <div class="conversation-topbar">
       <div>
-        <span class="page-kicker">Practice loop</span>
+        <span class="page-kicker">模拟面试</span>
         <h1>Mock Interview</h1>
-        <p class="muted">Run and inspect the mock interviewer state machine for a selected interview.</p>
+        <p class="muted">{{ mockSummaryLine }}</p>
       </div>
-      <StatusBadge :status="pageStatus" />
+      <div class="topbar-actions">
+        <StatusBadge :status="pageStatus" />
+        <button class="secondary" type="button" @click="evidenceOpen = !evidenceOpen">
+          {{ evidenceOpen ? '收起证据' : '展开证据' }}
+        </button>
+      </div>
     </div>
 
-    <section class="panel">
-      <div class="panel-title">
-        <div>
-          <h2>Interview Context</h2>
-          <p>Load an interview, choose plan context, then start or resume its mock session.</p>
-        </div>
-        <StatusBadge :status="interviewStatus" />
-      </div>
-
+    <section class="conversation-setup panel">
       <form class="mock-context-grid" @submit.prevent="loadInterview">
         <label>
           interview_id
@@ -28,7 +25,7 @@
           <input v-model.trim="context.plan_id" autocomplete="off" placeholder="optional plan_id" @change="rememberPlan" />
         </label>
         <label>
-          target_round
+          轮次
           <input v-model.trim="context.target_round" autocomplete="off" placeholder="second_round" />
         </label>
         <label>
@@ -36,232 +33,127 @@
           <input v-model.trim="context.user_id" autocomplete="off" placeholder="user_001" />
         </label>
         <div class="context-actions">
-          <button class="secondary" type="submit" :disabled="!canUseInterview || isLoading('mockInterviewDetail')">Load Interview</button>
+          <button class="secondary" type="submit" :disabled="!canUseInterview || isLoading('mockInterviewDetail')">加载面试</button>
           <button class="primary" type="button" :disabled="!canUseInterview || isLoading('startMockInterview')" @click="startOrResumeMock">
-            Start/Resume Mock
+            开始/继续 Mock
           </button>
           <button class="secondary" type="button" :disabled="!selectedMockId || isLoading('getMockInterview')" @click="refreshMock">
-            Refresh Mock
-          </button>
-          <button class="secondary" type="button" :disabled="!canControlMock || isLoading('completeMockInterview')" @click="completeMock">
-            Complete
-          </button>
-          <button class="danger" type="button" :disabled="!canControlMock || isLoading('cancelMockInterview')" @click="cancelMock">
-            Cancel
+            刷新
           </button>
         </div>
       </form>
-
-      <EmptyState
-        v-if="!context.interview_id"
-        title="No interview selected"
-        message="Enter an interview_id or select one from the workbench, then load the interview context."
-      />
-
-      <dl v-else class="mock-detail-grid">
-        <div>
-          <dt>company</dt>
-          <dd>{{ interview.company_name || '-' }}</dd>
-        </div>
-        <div>
-          <dt>job title</dt>
-          <dd>{{ interview.job_title || '-' }}</dd>
-        </div>
-        <div>
-          <dt>interview status</dt>
-          <dd><StatusBadge :status="interview.status || 'unknown'" /></dd>
-        </div>
-        <div>
-          <dt>plan_id</dt>
-          <dd>{{ context.plan_id || '-' }}</dd>
-        </div>
-        <div>
-          <dt>latest mock</dt>
-          <dd>{{ selectedMockId || '-' }}</dd>
-        </div>
-      </dl>
     </section>
 
-    <div class="mock-layout">
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Mock State</h2>
-            <p>{{ mock?.overall_goal || 'Start or refresh a mock interview to inspect state.' }}</p>
-          </div>
-          <StatusBadge :status="mock?.status || 'none'" />
+    <div class="conversation-shell" :class="{ 'evidence-collapsed': !evidenceOpen }">
+      <main class="chat-main panel">
+        <div class="chat-summary-line">
+          <strong>当前题目：{{ currentQuestion }}</strong>
+          <span>状态：{{ mock?.status || '未开始' }}</span>
         </div>
 
-        <EmptyState v-if="!mock" title="No mock loaded" message="Start, resume, or refresh a mock interview." />
+        <div class="long-chat-stream">
+          <EmptyState v-if="!chatMessages.length" title="还没有对话" message="开始 Mock 后，这里会显示面试官和你的长对话。" />
+          <article v-for="message in chatMessages" :key="message.id" class="chat-bubble" :class="message.role">
+            <span>{{ message.role === 'user' ? '我' : '面试官' }}</span>
+            <p>{{ message.content }}</p>
+          </article>
+        </div>
 
-        <div v-else class="detail-stack">
+        <form class="fixed-composer" @submit.prevent="submitFormalAnswer">
+          <textarea v-model="answerInput" rows="4" :disabled="!canAnswerMock" placeholder="默认作为正式回答提交。需要提示或澄清时，用场外提问。" />
+          <div class="composer-actions">
+            <button class="primary" type="button" :disabled="!canSubmitTurn || isLoading('submitMockTurn')" @click="submitFormalAnswer">
+              回答
+            </button>
+            <button class="secondary" type="button" :disabled="!canSubmitTurn || isLoading('submitMockTurn')" @click="submitOffRecordQuestion">
+              场外提问
+            </button>
+          </div>
+        </form>
+      </main>
+
+      <aside v-show="evidenceOpen" class="evidence-panel">
+        <details open class="evidence-section">
+          <summary>面试状态</summary>
+          <div class="secondary-actions compact-actions">
+            <button class="secondary" type="button" :disabled="!canControlMock || isLoading('completeMockInterview')" @click="completeMock">完成</button>
+            <button class="danger" type="button" :disabled="!canControlMock || isLoading('cancelMockInterview')" @click="cancelMock">取消</button>
+          </div>
           <dl class="field-stack">
             <div class="field-row">
               <dt>mock_id</dt>
-              <dd>{{ mock.mock_id || '-' }}</dd>
+              <dd>{{ mock?.mock_id || '-' }}</dd>
             </div>
             <div class="field-row">
-              <dt>status</dt>
-              <dd><StatusBadge :status="mock.status || 'unknown'" /></dd>
+              <dt>company</dt>
+              <dd>{{ interview.company_name || '-' }}</dd>
             </div>
             <div class="field-row">
-              <dt>current_topic</dt>
-              <dd>{{ mock.current_topic || '-' }}</dd>
+              <dt>plan_id</dt>
+              <dd>{{ context.plan_id || '-' }}</dd>
             </div>
             <div class="field-row">
-              <dt>current_turn</dt>
-              <dd>{{ mock.current_turn ?? '-' }}</dd>
+              <dt>当前 topic</dt>
+              <dd>{{ mock?.current_topic || '-' }}</dd>
             </div>
             <div class="field-row">
-              <dt>overall_goal</dt>
-              <dd>{{ mock.overall_goal || '-' }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>current question</dt>
-              <dd>{{ currentQuestion }}</dd>
-            </div>
-            <div v-if="mock.error_message" class="field-row has-error">
-              <dt>error_message</dt>
-              <dd>{{ mock.error_message }}</dd>
+              <dt>正式轮次</dt>
+              <dd>{{ mock?.current_turn ?? '-' }}</dd>
             </div>
           </dl>
+        </details>
 
-          <RouterLink v-if="selectedMockId" class="text-link" :to="traceLink">Open Mock Trace</RouterLink>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Answer Composer</h2>
-            <p>Submit an answer to the current interviewer question.</p>
-          </div>
-          <StatusBadge :status="canSubmitTurn ? 'ready' : 'blocked'" />
-        </div>
-
-        <textarea v-model="answerInput" rows="8" :disabled="!canAnswerMock" placeholder="Type your answer for the mock interviewer." />
-        <div class="secondary-actions">
-          <button class="primary" type="button" :disabled="!canSubmitTurn || isLoading('submitMockTurn')" @click="submitTurn">
-            Submit Answer
-          </button>
-          <button class="secondary" type="button" :disabled="!answerInput" @click="clearAnswer">Clear</button>
-        </div>
-      </section>
-    </div>
-
-    <section class="panel">
-      <div class="panel-title">
-        <div>
-          <h2>Latest Result</h2>
-          <p>Feedback, score, next action, and practice update summary if the backend returned one.</p>
-        </div>
-        <StatusBadge :status="latestResultStatus" />
-      </div>
-
-      <EmptyState v-if="!latestResultTurn && !mock?.last_feedback && !mock?.final_summary" title="No result yet" message="Submit or refresh a mock turn to see feedback." />
-
-      <div v-else class="mock-result-grid">
-        <TurnTimelineItem v-if="latestResultTurn" :turn="latestResultTurn" kind="mock" />
-
-        <article class="result-card" :class="{ 'has-error': Boolean(latestResultTurn?.error_message || mock?.error_message) }">
-          <header class="item-head">
-            <div>
-              <strong>Session result</strong>
-              <small>{{ selectedMockId || '-' }}</small>
-            </div>
-            <StatusBadge :status="mock?.status || latestResultTurn?.agent_action || 'mock'" />
-          </header>
-          <dl class="field-stack">
-            <div class="field-row">
-              <dt>feedback</dt>
-              <dd>{{ latestFeedback }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>score</dt>
-              <dd>{{ latestResultTurn?.score ?? '-' }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>next action</dt>
-              <dd>{{ latestNextAction }}</dd>
-            </div>
-            <div v-if="practiceUpdateSummary" class="field-row">
-              <dt>practice update</dt>
-              <dd>{{ practiceUpdateSummary }}</dd>
-            </div>
-            <div v-if="mock?.final_summary" class="field-row">
-              <dt>final summary</dt>
-              <dd>{{ mock.final_summary }}</dd>
-            </div>
-          </dl>
-        </article>
-      </div>
-    </section>
-
-    <div class="mock-layout">
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Practice Evidence</h2>
-            <p>Read-only practice states for the selected user.</p>
-          </div>
-          <StatusBadge :status="practiceError ? 'failed' : 'ready'" />
-        </div>
-
-        <div class="secondary-actions">
-          <button class="secondary" type="button" :disabled="isLoading('mockPracticeStates')" @click="loadPracticeStates">
-            Refresh Practice
-          </button>
-        </div>
-
-        <ErrorNotice v-if="practiceError" :message="practiceError" />
-        <EmptyState v-else-if="!practiceStates.length" title="No practice states" message="Mock answers may update practice state after evaluation." />
-
-        <div v-else class="practice-list">
-          <article v-for="item in practiceStates" :key="item.state_id || `${item.topic}-${item.dimension}`" class="practice-card">
-            <header class="item-head">
-              <div>
-                <strong>{{ item.topic || 'Untitled topic' }}</strong>
-                <small>{{ item.dimension || '-' }} | attempts {{ item.attempt_count ?? 0 }}</small>
-              </div>
-              <StatusBadge :status="item.mastery_score ?? 'score'" />
-            </header>
-            <p>{{ item.last_feedback || 'No feedback.' }}</p>
-            <small>{{ item.source_type || '-' }} | {{ item.source_id || '-' }} | last score {{ item.last_score ?? '-' }}</small>
+        <details class="evidence-section">
+          <summary>最近反馈</summary>
+          <EmptyState v-if="!latestResultTurn && !mock?.last_feedback && !mock?.final_summary" title="还没有反馈" message="提交回答后会显示最近反馈。" />
+          <article v-else class="result-card" :class="{ 'has-error': Boolean(latestResultTurn?.error_message || mock?.error_message) }">
+            <StatusBadge :status="latestResultStatus" />
+            <p>{{ latestFeedback }}</p>
+            <small>score {{ latestResultTurn?.score ?? '-' }} · {{ latestNextAction }}</small>
+            <p v-if="practiceUpdateSummary" class="muted">{{ practiceUpdateSummary }}</p>
           </article>
-        </div>
-      </section>
+        </details>
 
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Turn Timeline</h2>
-            <p>Opening question, answers, evaluations, hints, followups, topic switches, and closing turns.</p>
+        <details class="evidence-section">
+          <summary>Practice States</summary>
+          <div class="secondary-actions compact-actions">
+            <button class="secondary" type="button" :disabled="isLoading('mockPracticeStates')" @click="loadPracticeStates">刷新 Practice</button>
           </div>
-          <StatusBadge :status="timeline.length ? 'ready' : 'empty'" />
-        </div>
+          <ErrorNotice v-if="practiceError" :message="practiceError" />
+          <EmptyState v-else-if="!practiceStates.length" title="还没有练习状态" message="正式回答可能更新 practice state。" />
+          <div v-else class="practice-list">
+            <article v-for="item in practiceStates" :key="item.state_id || `${item.topic}-${item.dimension}`" class="practice-card">
+              <strong>{{ item.topic || '未命名 topic' }}</strong>
+              <p>{{ item.last_feedback || '暂无反馈。' }}</p>
+              <small>{{ item.source_type || '-' }} · {{ item.source_id || '-' }}</small>
+            </article>
+          </div>
+        </details>
 
-        <EmptyState v-if="!timeline.length" title="No turns" message="Start or refresh a mock interview to populate the timeline." />
-
-        <div v-else class="timeline">
-          <article v-for="turn in timeline" :key="turn.turn_id || `opening-${turn.turn_index}`" class="timeline-entry">
-            <TurnTimelineItem :turn="turn" kind="mock" />
-            <dl v-if="hasTurnEvidence(turn)" class="timeline-evidence">
-              <div v-if="turn.follow_up_reason" class="field-row">
-                <dt>follow_up_reason</dt>
-                <dd>{{ turn.follow_up_reason }}</dd>
-              </div>
-              <div v-if="Array.isArray(turn.topic_tags) && turn.topic_tags.length" class="field-row">
-                <dt>topic_tags</dt>
-                <dd>{{ turn.topic_tags.join(', ') }}</dd>
-              </div>
-              <div v-if="turn.phase || turn.turn_type" class="field-row">
-                <dt>evidence meta</dt>
-                <dd>{{ turnEvidenceMeta(turn) }}</dd>
-              </div>
-            </dl>
-          </article>
-        </div>
-      </section>
+        <details class="evidence-section">
+          <summary>Trace / Timeline</summary>
+          <RouterLink v-if="selectedMockId" class="text-link" :to="traceLink">打开 Trace</RouterLink>
+          <div class="timeline compact">
+            <article v-for="turn in timeline" :key="turn.turn_id || `opening-${turn.turn_index}`" class="timeline-entry">
+              <TurnTimelineItem :turn="turn" kind="mock" />
+              <dl v-if="hasTurnEvidence(turn)" class="timeline-evidence">
+                <div v-if="turn.follow_up_reason" class="field-row">
+                  <dt>follow_up_reason</dt>
+                  <dd>{{ turn.follow_up_reason }}</dd>
+                </div>
+                <div v-if="Array.isArray(turn.topic_tags) && turn.topic_tags.length" class="field-row">
+                  <dt>topic_tags</dt>
+                  <dd>{{ turn.topic_tags.join(', ') }}</dd>
+                </div>
+                <div v-if="turn.phase || turn.turn_type" class="field-row">
+                  <dt>evidence meta</dt>
+                  <dd>{{ turnEvidenceMeta(turn) }}</dd>
+                </div>
+              </dl>
+            </article>
+          </div>
+        </details>
+      </aside>
     </div>
   </section>
 </template>
@@ -289,6 +181,7 @@ const turns = ref([])
 const practiceStates = ref([])
 const practiceError = ref('')
 const answerInput = ref('')
+const evidenceOpen = ref(false)
 
 const terminalStatuses = new Set(['failed', 'completed', 'cancelled', 'canceled'])
 
@@ -310,6 +203,11 @@ const currentQuestion = computed(() => {
 const canControlMock = computed(() => Boolean(mock.value?.mock_id && !terminalStatuses.has(normalizeStatus(mock.value.status))))
 const canAnswerMock = computed(() => Boolean(mock.value?.mock_id && !terminalStatuses.has(normalizeStatus(mock.value.status))))
 const canSubmitTurn = computed(() => Boolean(canAnswerMock.value && answerInput.value.trim()))
+const mockSummaryLine = computed(() => {
+  const question = currentQuestion.value && currentQuestion.value !== '-' ? currentQuestion.value : '尚未开始'
+  const status = mock.value?.status || '未开始'
+  return `当前题目：${question} / 状态：${status}`
+})
 const latestFeedback = computed(() => latestResultTurn.value?.feedback || mock.value?.last_feedback || mock.value?.final_summary || '-')
 const latestNextAction = computed(() => latestResultTurn.value?.agent_action || latestResultTurn.value?.phase || latestResultTurn.value?.turn_type || '-')
 const latestResultStatus = computed(() => {
@@ -355,6 +253,16 @@ const timeline = computed(() => {
     ...turns.value,
   ]
 })
+const chatMessages = computed(() =>
+  timeline.value
+    .filter((turn) => ['user', 'assistant'].includes(String(turn.role || '').toLowerCase()))
+    .map((turn) => ({
+      id: turn.turn_id || `turn-${turn.turn_index}-${turn.role}`,
+      role: String(turn.role || '').toLowerCase() === 'user' ? 'user' : 'assistant',
+      content: turn.content || turn.next_question || turn.feedback || turn.interviewer_question || '',
+    }))
+    .filter((message) => message.content.trim()),
+)
 
 function normalizeStatus(value) {
   return String(value || '').toLowerCase()
@@ -501,15 +409,23 @@ async function refreshTurns() {
   turns.value = asArray(loaded)
 }
 
-async function submitTurn() {
+async function submitWithMode(submitMode) {
   if (!canSubmitTurn.value) return
   await runWithStatus(
     'submitMockTurn',
-    () => api.submitMockTurn(mock.value.mock_id, { answer: answerInput.value.trim() }),
-    'Mock answer submitted',
+    () => api.submitMockTurn(mock.value.mock_id, { answer: answerInput.value.trim(), submit_mode: submitMode }),
+    submitMode === 'chat' ? '场外提问已发送' : '回答已提交',
   )
   answerInput.value = ''
   await refreshMock()
+}
+
+async function submitFormalAnswer() {
+  await submitWithMode('formal_answer')
+}
+
+async function submitOffRecordQuestion() {
+  await submitWithMode('chat')
 }
 
 async function completeMock() {
