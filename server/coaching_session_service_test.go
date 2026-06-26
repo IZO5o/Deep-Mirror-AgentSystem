@@ -317,6 +317,41 @@ func TestSubmitCoachingSessionTurn_CompleteActionCompletesSessionWithoutAttemptO
 	}
 }
 
+func TestSubmitCoachingSessionTurn_ChatModeDoesNotWriteMemoryItems(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	beforeMemoryItems, err := s.ListMemoryItems("user_001")
+	if err != nil {
+		t.Fatalf("ListMemoryItems() before error = %v", err)
+	}
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionIntentDecisionJSON(
+		CoachingInputTypeHintRequest,
+		"可以，我先在本轮对话里参考这个偏好；正式记忆仍需要走候选确认。",
+		"smalltalk",
+		"chat_only",
+		false,
+		false,
+		0,
+		"not persisted as memory item",
+		CoachingNextActionContinue,
+		false,
+	)
+
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "我以后都想重点练 Redis 缓存一致性",
+		SubmitMode: CoachingSubmitModeChat,
+	}); err != nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = %v", err)
+	}
+	afterMemoryItems, err := s.ListMemoryItems("user_001")
+	if err != nil {
+		t.Fatalf("ListMemoryItems() after error = %v", err)
+	}
+	if len(afterMemoryItems) != len(beforeMemoryItems) {
+		t.Fatalf("memory item count changed from %d to %d", len(beforeMemoryItems), len(afterMemoryItems))
+	}
+}
+
 func TestSubmitCoachingSessionTurn_DefaultChatModeDoesNotRecordLegacyFormalOutput(t *testing.T) {
 	s, runners, plan := createCoachingSessionReadyPlan(t)
 	session := startTestCoachingSession(t, s, plan.PlanID)

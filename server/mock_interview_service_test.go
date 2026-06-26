@@ -511,6 +511,40 @@ func TestMockInterviewDoesNotWriteMemoryItems(t *testing.T) {
 	}
 }
 
+func TestSubmitMockTurnChatModeDoesNotWriteMemoryItems(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	before, err := s.ListMemoryItems("user_001")
+	if err != nil {
+		t.Fatalf("ListMemoryItems() before error = %v", err)
+	}
+	runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+		sampleMockStartJSON(),
+		sampleMockChatOnlyJSON("可以，我会在本轮追问里参考这个偏好；正式记忆仍需要走候选确认。", mockUserIntentSmalltalk, 91),
+	}
+
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{
+		UserID: "user_001",
+		PlanID: planID,
+	})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	if _, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+		Answer:     "我以后都想重点练 Redis 缓存一致性",
+		SubmitMode: mockSubmitModeChat,
+	}); err != nil {
+		t.Fatalf("SubmitMockTurn() error = %v", err)
+	}
+	after, err := s.ListMemoryItems("user_001")
+	if err != nil {
+		t.Fatalf("ListMemoryItems() after error = %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("memory item count changed from %d to %d", len(before), len(after))
+	}
+}
+
 func TestSubmitMockTurnHintDoesNotUpdatePracticeState(t *testing.T) {
 	s, runners := newTestServerWithFakeAgents(t)
 	session, planID := createMockReadyInterview(t, s, runners)
