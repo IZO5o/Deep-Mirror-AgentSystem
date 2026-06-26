@@ -1,34 +1,31 @@
 <template>
-  <section class="page">
-    <div class="page-header">
+  <section class="page conversation-page">
+    <div class="conversation-topbar">
       <div>
-        <span class="page-kicker">Second-round preparation</span>
+        <span class="page-kicker">二面辅导</span>
         <h1>Coaching</h1>
-        <p class="muted">Plan-level coaching session for a selected interview.</p>
+        <p class="muted">{{ coachingSummaryLine }}</p>
       </div>
-      <StatusBadge :status="pageStatus" />
+      <div class="topbar-actions">
+        <StatusBadge :status="pageStatus" />
+        <button class="secondary" type="button" @click="evidenceOpen = !evidenceOpen">
+          {{ evidenceOpen ? '收起证据' : '展开证据' }}
+        </button>
+      </div>
     </div>
 
-    <section class="panel">
-      <div class="panel-title">
-        <div>
-          <h2>Interview Context</h2>
-          <p>Load an interview, generate or fetch its coaching plan, then start a plan session.</p>
-        </div>
-        <StatusBadge :status="interviewStatus" />
-      </div>
-
+    <section class="conversation-setup panel">
       <form class="coaching-context-grid" @submit.prevent="loadInterview">
         <label>
           interview_id
           <input v-model.trim="context.interview_id" autocomplete="off" placeholder="interview_id" />
         </label>
         <label>
-          target_round
+          轮次
           <input v-model.trim="context.target_round" autocomplete="off" placeholder="second_round" />
         </label>
         <label>
-          remaining_days
+          剩余天数
           <input v-model.number="context.remaining_days" min="0" type="number" />
         </label>
         <label>
@@ -36,289 +33,141 @@
           <input v-model.trim="context.user_id" autocomplete="off" placeholder="user_001" />
         </label>
         <div class="context-actions">
-          <button class="secondary" type="submit" :disabled="!canUseInterview || isLoading('coachingInterview')">Load Interview</button>
+          <button class="secondary" type="submit" :disabled="!canUseInterview || isLoading('coachingInterview')">加载面试</button>
           <button class="primary" type="button" :disabled="!canUseInterview || isLoading('generateCoachingPlan')" @click="generatePlan">
-            Generate Plan
+            生成计划
           </button>
           <button class="secondary" type="button" :disabled="!canUseInterview || isLoading('getCoachingPlan')" @click="getPlan">
-            Get Plan
+            读取计划
           </button>
-        </div>
-      </form>
-
-      <EmptyState
-        v-if="!selectedInterviewId"
-        title="No interview selected"
-        message="Enter an interview_id or select one from the workbench, then load the interview context."
-      />
-
-      <dl v-else class="coaching-detail-grid">
-        <div>
-          <dt>company</dt>
-          <dd>{{ interview.company_name || '-' }}</dd>
-        </div>
-        <div>
-          <dt>job title</dt>
-          <dd>{{ interview.job_title || '-' }}</dd>
-        </div>
-        <div>
-          <dt>interview status</dt>
-          <dd><StatusBadge :status="interview.status || 'unknown'" /></dd>
-        </div>
-        <div>
-          <dt>review readiness</dt>
-          <dd><StatusBadge :status="reviewReadiness" /></dd>
-        </div>
-        <div>
-          <dt>plan_id</dt>
-          <dd>{{ selectedPlanId || '-' }}</dd>
-        </div>
-      </dl>
-    </section>
-
-    <div class="coaching-layout">
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Plan</h2>
-            <p>{{ selectedPlanId || 'No coaching plan loaded.' }}</p>
-          </div>
-          <StatusBadge :status="plan?.status || 'none'" />
-        </div>
-
-        <EmptyState v-if="!plan" title="No plan" message="Generate or get a coaching plan for the selected interview." />
-
-        <div v-else class="detail-stack">
-          <dl class="field-stack">
-            <div class="field-row">
-              <dt>strategy</dt>
-              <dd>{{ plan.overall_strategy || '-' }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>focus</dt>
-              <dd>{{ plan.focus_summary || '-' }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>status</dt>
-              <dd><StatusBadge :status="plan.status || 'unknown'" /></dd>
-            </div>
-          </dl>
-
-          <div class="secondary-actions">
-            <button class="secondary" type="button" :disabled="!selectedPlanId || isLoading('coachingTasks')" @click="loadTasks">
-              Refresh Tasks
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Session Controls</h2>
-            <p>{{ selectedSessionId || 'Start or resume a session from the loaded plan.' }}</p>
-          </div>
-          <StatusBadge :status="session?.status || 'none'" />
-        </div>
-
-        <div class="secondary-actions">
           <button
             class="primary"
             type="button"
             :disabled="!selectedPlanId || !contextUserId || isLoading('startCoachingSession')"
             @click="startOrResumeSession"
           >
-            Start/Resume
-          </button>
-          <button class="secondary" type="button" :disabled="!selectedSessionId || isLoading('getCoachingSession')" @click="refreshSession">
-            Refresh Session
-          </button>
-          <button class="secondary" type="button" :disabled="!canControlSession || isLoading('pauseCoachingSession')" @click="pauseSession">
-            Pause
-          </button>
-          <button class="danger" type="button" :disabled="!canControlSession || isLoading('cancelCoachingSession')" @click="cancelSession">
-            Cancel
+            开始/继续辅导
           </button>
         </div>
-
-        <RouterLink v-if="selectedSessionId" class="text-link" :to="traceLink">Open Coaching Trace</RouterLink>
-      </section>
-    </div>
-
-    <section class="panel">
-      <div class="panel-title">
-        <div>
-          <h2>Tasks</h2>
-          <p>{{ tasks.length }} tasks loaded.</p>
-        </div>
-        <StatusBadge :status="currentTask ? 'current' : 'none'" />
-      </div>
-
-      <EmptyState v-if="!tasks.length" title="No tasks" message="Load tasks after a coaching plan is available." />
-
-      <div v-else class="task-list">
-        <article
-          v-for="task in tasks"
-          :key="task.task_id"
-          class="task-card"
-          :class="{ active: task.task_id && task.task_id === currentTask?.task_id }"
-        >
-          <header class="task-head">
-            <div>
-              <strong>#{{ task.sequence || '-' }} {{ task.title || 'Untitled task' }}</strong>
-              <small>{{ task.task_type || '-' }} · day {{ task.day_index || '-' }} · {{ task.priority || 'priority unset' }}</small>
-            </div>
-            <StatusBadge :status="task.status || 'unknown'" />
-          </header>
-          <p>{{ task.description || 'No description.' }}</p>
-          <div class="task-success-criteria">{{ taskSuccessCriteria(task) }}</div>
-          <div v-if="task.task_id === currentTask?.task_id" class="current-task-highlight">
-            current task
-          </div>
-        </article>
-      </div>
+      </form>
     </section>
 
-    <div class="coaching-layout">
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Session State</h2>
-            <p>{{ session?.session_id || 'No active session.' }}</p>
-          </div>
-          <StatusBadge :status="session?.status || 'none'" />
+    <div class="conversation-shell" :class="{ 'evidence-collapsed': !evidenceOpen }">
+      <main class="chat-main panel">
+        <div class="chat-summary-line">
+          <strong>当前训练重点：{{ currentTask?.title || '尚未开始' }}</strong>
+          <span>状态：{{ session?.status || '未开始' }}</span>
         </div>
 
-        <EmptyState v-if="!session" title="No session" message="Start or resume a coaching session to view state." />
-
-        <div v-else class="detail-stack">
-          <dl class="field-stack">
-            <div class="field-row">
-              <dt>current task</dt>
-              <dd>{{ currentTaskLabel }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>progress</dt>
-              <dd>{{ session.progress_summary || '-' }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>last agent</dt>
-              <dd>{{ session.last_agent_message || '-' }}</dd>
-            </div>
-            <div v-if="session.error_message" class="field-row has-error">
-              <dt>error</dt>
-              <dd>{{ session.error_message }}</dd>
-            </div>
-          </dl>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Turn Composer</h2>
-            <p>Submit user input to the selected coaching session.</p>
-          </div>
-          <StatusBadge :status="canSubmitTurn ? 'ready' : 'blocked'" />
-        </div>
-
-        <textarea v-model="turnInput" rows="6" placeholder="Type a formal answer, hint request, explanation request, pause, or skip instruction." />
-        <div class="secondary-actions">
-          <button class="primary" type="button" :disabled="!canSubmitTurn || isLoading('submitCoachingTurn')" @click="submitTurn">
-            Submit Turn
-          </button>
-          <button class="secondary" type="button" :disabled="!turnInput" @click="clearTurn">Clear</button>
-        </div>
-      </section>
-    </div>
-
-    <section class="panel">
-      <div class="panel-title">
-        <div>
-          <h2>Latest Result</h2>
-          <p>Assistant response, score, feedback, action, and latest recorded attempt.</p>
-        </div>
-        <StatusBadge :status="latestResultStatus" />
-      </div>
-
-      <EmptyState v-if="!latestAssistantTurn && !latestAttempt" title="No result yet" message="Submit or refresh a session turn to see the latest coaching result." />
-
-      <div v-else class="coaching-result-grid">
-        <TurnTimelineItem v-if="latestAssistantTurn" :turn="latestAssistantTurn" kind="coaching" />
-
-        <article v-if="latestAttempt" class="attempt-card" :class="{ 'has-error': Boolean(latestAttempt.error_message) }">
-          <header class="task-head">
-            <div>
-              <strong>Attempt #{{ latestAttempt.attempt_index || '-' }}</strong>
-              <small>{{ latestAttempt.attempt_id || '-' }}</small>
-            </div>
-            <StatusBadge :status="latestAttempt.passed ? 'passed' : 'needs_revision'" />
-          </header>
-          <dl class="field-stack">
-            <div class="field-row">
-              <dt>score</dt>
-              <dd>{{ latestAttempt.score ?? '-' }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>feedback</dt>
-              <dd>{{ latestAttempt.feedback || '-' }}</dd>
-            </div>
-            <div class="field-row">
-              <dt>answer</dt>
-              <dd>{{ latestAttempt.user_answer || '-' }}</dd>
-            </div>
-            <div v-if="latestAttempt.error_message" class="field-row has-error">
-              <dt>error</dt>
-              <dd>{{ latestAttempt.error_message }}</dd>
-            </div>
-          </dl>
-        </article>
-      </div>
-    </section>
-
-    <div class="coaching-layout">
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Practice Evidence</h2>
-            <p>Read-only practice states for the selected user.</p>
-          </div>
-          <StatusBadge :status="practiceError ? 'failed' : 'ready'" />
-        </div>
-
-        <ErrorNotice v-if="practiceError" :message="practiceError" />
-        <EmptyState v-else-if="!practiceStates.length" title="No practice states" message="Formal coaching answers may update practice states." />
-
-        <div v-else class="practice-list">
-          <article v-for="item in practiceStates" :key="item.state_id || `${item.topic}-${item.dimension}`" class="practice-card">
-            <header class="task-head">
-              <div>
-                <strong>{{ item.topic || 'Untitled topic' }}</strong>
-                <small>{{ item.dimension || '-' }} · attempts {{ item.attempt_count ?? 0 }}</small>
-              </div>
-              <StatusBadge :status="item.mastery_score ?? 'score'" />
-            </header>
-            <p>{{ item.last_feedback || 'No feedback.' }}</p>
-            <small>{{ item.source_type || '-' }} · {{ item.source_id || '-' }} · last score {{ item.last_score ?? '-' }}</small>
+        <div class="long-chat-stream">
+          <EmptyState v-if="!chatMessages.length" title="还没有对话" message="开始辅导后，这里会显示和导师的长对话。" />
+          <article v-for="message in chatMessages" :key="message.id" class="chat-bubble" :class="message.role">
+            <span>{{ message.role === 'user' ? '我' : '导师' }}</span>
+            <p>{{ message.content }}</p>
           </article>
         </div>
-      </section>
 
-      <section class="panel">
-        <div class="panel-title">
-          <div>
-            <h2>Timeline</h2>
-            <p>{{ turns.length }} session turns.</p>
+        <form class="fixed-composer" @submit.prevent="submitChatTurn">
+          <textarea v-model="turnInput" rows="4" :disabled="!canEditTurn" placeholder="可以提问、让导师提示，或先聊清楚思路。" />
+          <div class="composer-actions">
+            <button class="secondary" type="button" :disabled="!canSubmitTurn || isLoading('submitCoachingTurn')" @click="submitChatTurn">
+              发送
+            </button>
+            <button class="primary" type="button" :disabled="!canSubmitTurn || isLoading('submitCoachingTurn')" @click="submitFormalTurn">
+              作为正式回答提交
+            </button>
           </div>
-          <StatusBadge :status="turns.length ? 'ready' : 'empty'" />
-        </div>
+        </form>
+      </main>
 
-        <EmptyState v-if="!turns.length" title="No turns" message="Start a session or submit user input to populate the coaching timeline." />
+      <aside v-show="evidenceOpen" class="evidence-panel">
+        <details open class="evidence-section">
+          <summary>训练计划 / 任务</summary>
+          <p class="muted">{{ plan?.focus_summary || plan?.overall_strategy || '还没有训练计划。' }}</p>
+          <div class="task-list compact">
+            <article v-for="task in tasks" :key="task.task_id" class="task-card" :class="{ active: task.task_id === currentTask?.task_id }">
+              <header class="task-head">
+                <div>
+                  <strong>#{{ task.sequence || '-' }} {{ task.title || '未命名任务' }}</strong>
+                  <small>{{ task.task_type || '-' }} · day {{ task.day_index || '-' }}</small>
+                </div>
+                <StatusBadge :status="task.status || 'unknown'" />
+              </header>
+              <p>{{ task.description || '没有描述。' }}</p>
+              <div class="task-success-criteria">{{ taskSuccessCriteria(task) }}</div>
+            </article>
+          </div>
+        </details>
 
-        <div v-else class="timeline">
-          <TurnTimelineItem v-for="turn in turns" :key="turn.turn_id" :turn="turn" kind="coaching" />
-        </div>
-      </section>
+        <details class="evidence-section">
+          <summary>会话控制</summary>
+          <div class="secondary-actions compact-actions">
+            <button class="secondary" type="button" :disabled="!selectedPlanId || isLoading('coachingTasks')" @click="loadTasks">刷新任务</button>
+            <button class="secondary" type="button" :disabled="!selectedSessionId || isLoading('getCoachingSession')" @click="refreshSession">刷新会话</button>
+            <button class="secondary" type="button" :disabled="!canControlSession || isLoading('pauseCoachingSession')" @click="pauseSession">暂停</button>
+            <button class="danger" type="button" :disabled="!canControlSession || isLoading('cancelCoachingSession')" @click="cancelSession">取消</button>
+          </div>
+          <dl class="field-stack">
+            <div class="field-row">
+              <dt>company</dt>
+              <dd>{{ interview.company_name || '-' }}</dd>
+            </div>
+            <div class="field-row">
+              <dt>job</dt>
+              <dd>{{ interview.job_title || '-' }}</dd>
+            </div>
+            <div class="field-row">
+              <dt>plan_id</dt>
+              <dd>{{ selectedPlanId || '-' }}</dd>
+            </div>
+            <div class="field-row">
+              <dt>session</dt>
+              <dd>{{ selectedSessionId || '-' }}</dd>
+            </div>
+            <div class="field-row">
+              <dt>review</dt>
+              <dd><StatusBadge :status="reviewReadiness" /></dd>
+            </div>
+          </dl>
+        </details>
+
+        <details class="evidence-section">
+          <summary>Attempts</summary>
+          <EmptyState v-if="!attempts.length" title="还没有正式回答" message="点击“作为正式回答提交”后会生成 attempt。" />
+          <article v-for="attempt in attempts" :key="attempt.attempt_id" class="attempt-card" :class="{ 'has-error': Boolean(attempt.error_message) }">
+            <header class="task-head">
+              <div>
+                <strong>Attempt #{{ attempt.attempt_index || '-' }}</strong>
+                <small>{{ attempt.attempt_id || '-' }}</small>
+              </div>
+              <StatusBadge :status="attempt.passed ? 'passed' : 'needs_revision'" />
+            </header>
+            <p>{{ attempt.feedback || '-' }}</p>
+            <small>score {{ attempt.score ?? '-' }}</small>
+          </article>
+        </details>
+
+        <details class="evidence-section">
+          <summary>Practice States</summary>
+          <ErrorNotice v-if="practiceError" :message="practiceError" />
+          <EmptyState v-else-if="!practiceStates.length" title="还没有练习状态" message="正式回答通过服务端规则更新 practice state。" />
+          <div v-else class="practice-list">
+            <article v-for="item in practiceStates" :key="item.state_id || `${item.topic}-${item.dimension}`" class="practice-card">
+              <strong>{{ item.topic || '未命名 topic' }}</strong>
+              <p>{{ item.last_feedback || '暂无反馈。' }}</p>
+              <small>{{ item.source_type || '-' }} · {{ item.source_id || '-' }} · last score {{ item.last_score ?? '-' }}</small>
+            </article>
+          </div>
+        </details>
+
+        <details class="evidence-section">
+          <summary>Trace / Timeline</summary>
+          <RouterLink v-if="selectedSessionId" class="text-link" :to="traceLink">打开 Trace</RouterLink>
+          <div class="timeline compact">
+            <TurnTimelineItem v-for="turn in turns" :key="turn.turn_id" :turn="turn" kind="coaching" />
+          </div>
+        </details>
+      </aside>
     </div>
   </section>
 </template>
@@ -347,6 +196,7 @@ const sessionDetail = ref(null)
 const practiceStates = ref([])
 const practiceError = ref('')
 const turnInput = ref('')
+const evidenceOpen = ref(false)
 
 const selectedInterviewId = computed(() => state.selectedInterviewId || context.interview_id)
 const selectedPlanId = computed(() => state.selectedPlanId || plan.value?.plan_id || '')
@@ -369,6 +219,21 @@ const currentTask = computed(() => {
 })
 const turns = computed(() => sessionDetail.value?.turns || [])
 const attempts = computed(() => sessionDetail.value?.attempts || [])
+const coachingSummaryLine = computed(() => {
+  const focus = currentTask.value?.title || plan.value?.focus_summary || '尚未加载训练重点'
+  const status = session.value?.status || '未开始'
+  return `当前训练重点：${focus} / 状态：${status}`
+})
+const chatMessages = computed(() =>
+  turns.value
+    .filter((turn) => ['user', 'assistant'].includes(String(turn.role || '').toLowerCase()))
+    .map((turn) => ({
+      id: turn.turn_id,
+      role: String(turn.role || '').toLowerCase() === 'user' ? 'user' : 'assistant',
+      content: turn.content || turn.feedback || '',
+    }))
+    .filter((message) => message.content.trim()),
+)
 const latestAssistantTurn = computed(() => {
   const reversed = [...turns.value].reverse()
   return reversed.find((turn) => turn.role === 'assistant' || turn.feedback || turn.agent_action || turn.score || turn.error_message) || null
@@ -388,7 +253,8 @@ const currentTaskLabel = computed(() => {
 const terminalStatuses = new Set(['failed', 'completed', 'cancelled', 'canceled'])
 const canUseInterview = computed(() => Boolean(context.interview_id && contextUserId.value))
 const canControlSession = computed(() => Boolean(selectedSessionId.value && session.value && !terminalStatuses.has(normalizeStatus(session.value.status))))
-const canSubmitTurn = computed(() => Boolean(selectedSessionId.value && turnInput.value.trim() && session.value && !terminalStatuses.has(normalizeStatus(session.value.status))))
+const canEditTurn = computed(() => Boolean(selectedSessionId.value && session.value && !terminalStatuses.has(normalizeStatus(session.value.status))))
+const canSubmitTurn = computed(() => Boolean(canEditTurn.value && turnInput.value.trim()))
 const traceLink = computed(() => ({
   path: '/trace',
   query: {
@@ -410,12 +276,12 @@ function isLoading(key) {
 function taskSuccessCriteria(task) {
   const taskType = String(task?.task_type || '').toLowerCase()
   if (['formal_answer', 'practice', 'answer'].includes(taskType)) {
-    return 'Success criteria: submit a formal answer, receive backend feedback, and progress this task through the coaching state machine.'
+    return '验收标准：提交正式回答，获得后端反馈，并推进当前训练任务。'
   }
   if (['review', 'weakness', 'gap'].includes(taskType)) {
-    return 'Success criteria: address the task description and use feedback to close the identified gap.'
+    return '验收标准：回应任务描述，并根据反馈补齐对应短板。'
   }
-  return 'Success criteria: complete this task through the coaching session and capture backend feedback.'
+  return '验收标准：在辅导会话中完成任务，并保留后端反馈。'
 }
 
 function syncSelectionsFromPlan(nextPlan) {
@@ -503,15 +369,25 @@ async function cancelSession() {
   syncSessionDetail(loaded)
 }
 
-async function submitTurn() {
+async function submitWithMode(submitMode) {
+  const text = turnInput.value.trim()
+  if (!text || !selectedSessionId.value) return
   const loaded = await runWithStatus(
     'submitCoachingTurn',
-    () => api.submitCoachingTurn(selectedSessionId.value, { user_input: turnInput.value.trim() }),
-    'Coaching turn submitted',
+    () => api.submitCoachingTurn(selectedSessionId.value, { user_input: text, submit_mode: submitMode }),
+    submitMode === 'formal_answer' ? '正式回答已提交' : '消息已发送',
   )
   turnInput.value = ''
   syncSessionDetail(loaded)
   await loadPracticeStates()
+}
+
+async function submitChatTurn() {
+  await submitWithMode('chat')
+}
+
+async function submitFormalTurn() {
+  await submitWithMode('formal_answer')
 }
 
 function clearTurn() {
