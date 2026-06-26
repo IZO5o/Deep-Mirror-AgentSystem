@@ -196,6 +196,163 @@ func TestSubmitMockTurnUsesFirstQuestionAndThenNextQuestion(t *testing.T) {
 	}
 }
 
+func TestSubmitMockTurnOmittedSubmitModeDefaultsFormalAndUpdatesPractice(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+		sampleMockStartJSON(),
+		sampleMockTurnJSON("继续追问工具失败恢复。", 76),
+	}
+
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{UserID: "user_001", PlanID: planID})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	turn, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{Answer: "我会先介绍项目背景，再讲工具失败恢复。"})
+	if err != nil {
+		t.Fatalf("SubmitMockTurn() error = %v", err)
+	}
+	if turn.Score != 76 || turn.Feedback == "" {
+		t.Fatalf("turn score/feedback = %d/%q, want formal scoring", turn.Score, turn.Feedback)
+	}
+	got, err := s.GetMockInterview(mock.MockID)
+	if err != nil {
+		t.Fatalf("GetMockInterview() error = %v", err)
+	}
+	if got.CurrentTurn != 1 {
+		t.Fatalf("current_turn = %d, want 1 for omitted submit_mode formal answer", got.CurrentTurn)
+	}
+	states, err := s.ListPracticeStates("user_001", "Agent 工具调用", "")
+	if err != nil {
+		t.Fatalf("ListPracticeStates() error = %v", err)
+	}
+	if len(states) != 1 || states[0].AttemptCount != 1 || states[0].LastScore != 76 {
+		t.Fatalf("practice states = %#v, want one updated state", states)
+	}
+}
+
+func TestSubmitMockTurnChatModeOffRecordDoesNotScoreOrAdvance(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+		sampleMockStartJSON(),
+		sampleMockChatOnlyJSON("可以，我先解释一下这题在看什么，然后我们回到原题。", "ask_explain", 91),
+	}
+
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{UserID: "user_001", PlanID: planID})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	turn, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+		Answer:     "这题能解释一下吗？",
+		SubmitMode: "chat",
+	})
+	if err != nil {
+		t.Fatalf("SubmitMockTurn() error = %v", err)
+	}
+	if turn.Content != "可以，我先解释一下这题在看什么，然后我们回到原题。" {
+		t.Fatalf("content = %q, want visible message", turn.Content)
+	}
+	if turn.Score != 0 || turn.Feedback != "" {
+		t.Fatalf("score/feedback = %d/%q, want cleared off-record metadata", turn.Score, turn.Feedback)
+	}
+	if turn.NextQuestion != mock.FirstQuestion {
+		t.Fatalf("next_question = %q, want current question %q", turn.NextQuestion, mock.FirstQuestion)
+	}
+	got, err := s.GetMockInterview(mock.MockID)
+	if err != nil {
+		t.Fatalf("GetMockInterview() error = %v", err)
+	}
+	if got.CurrentTurn != 0 || got.Status != MockInterviewStatusWaitingAnswer {
+		t.Fatalf("mock = %#v, want current_turn unchanged and waiting", got)
+	}
+	assertNoPracticeStates(t, s, "user_001")
+	turns, err := s.ListMockTurns(mock.MockID)
+	if err != nil {
+		t.Fatalf("ListMockTurns() error = %v", err)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("turns length = %d, want opening/user/assistant", len(turns))
+	}
+	if turns[2].Score != 0 || turns[2].Feedback != "" {
+		t.Fatalf("assistant score/feedback = %d/%q, want no formal scoring metadata", turns[2].Score, turns[2].Feedback)
+	}
+}
+
+func TestSubmitMockTurnChatSmalltalkAndUnclearSkipPractice(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		intent     string
+		visibleMsg string
+	}{
+		{name: "smalltalk", intent: "smalltalk", visibleMsg: "没问题，我们继续保持当前问题。"},
+		{name: "unclear", intent: "unclear", visibleMsg: "我还不确定你的意思，请直接回答当前问题或说明想要提示。"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, runners := newTestServerWithFakeAgents(t)
+			session, planID := createMockReadyInterview(t, s, runners)
+			runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+				sampleMockStartJSON(),
+				sampleMockChatOnlyJSON(tc.visibleMsg, tc.intent, 88),
+			}
+			mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{UserID: "user_001", PlanID: planID})
+			if err != nil {
+				t.Fatalf("StartMockInterview() error = %v", err)
+			}
+			turn, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+				Answer:     "哈哈",
+				SubmitMode: "chat",
+			})
+			if err != nil {
+				t.Fatalf("SubmitMockTurn() error = %v", err)
+			}
+			if turn.Score != 0 || turn.Feedback != "" {
+				t.Fatalf("score/feedback = %d/%q, want cleared", turn.Score, turn.Feedback)
+			}
+			got, err := s.GetMockInterview(mock.MockID)
+			if err != nil {
+				t.Fatalf("GetMockInterview() error = %v", err)
+			}
+			if got.CurrentTurn != 0 {
+				t.Fatalf("current_turn = %d, want unchanged", got.CurrentTurn)
+			}
+			assertNoPracticeStates(t, s, "user_001")
+		})
+	}
+}
+
+func TestSubmitMockTurnFormalNonAnswerRecordAttemptDoesNotScoreOrUpdatePractice(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+		sampleMockStartJSON(),
+		sampleMockFormalHintWithBadScoreJSON(),
+	}
+
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{UserID: "user_001", PlanID: planID})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	turn, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+		Answer:     "能给一点提示吗？",
+		SubmitMode: "formal_answer",
+	})
+	if err != nil {
+		t.Fatalf("SubmitMockTurn() error = %v", err)
+	}
+	if turn.Score != 0 || turn.Feedback != "" {
+		t.Fatalf("score/feedback = %d/%q, want cleared for formal non-answer", turn.Score, turn.Feedback)
+	}
+	got, err := s.GetMockInterview(mock.MockID)
+	if err != nil {
+		t.Fatalf("GetMockInterview() error = %v", err)
+	}
+	if got.CurrentTurn != 0 {
+		t.Fatalf("current_turn = %d, want unchanged", got.CurrentTurn)
+	}
+	assertNoPracticeStates(t, s, "user_001")
+}
+
 func TestSubmitMockTurnParseFailureDoesNotWriteTurn(t *testing.T) {
 	s, runners := newTestServerWithFakeAgents(t)
 	session, planID := createMockReadyInterview(t, s, runners)
@@ -514,6 +671,52 @@ func sampleMockTurnJSON(nextQuestion string, score int) string {
   "topic_tags": ["Agent 工具调用", "异常处理", "项目深挖"],
   "next_question": "%s"
 }`, nextQuestion, score, score, nextQuestion)
+}
+
+func sampleMockChatOnlyJSON(visibleMessage string, userIntent string, score int) string {
+	return fmt.Sprintf(`{
+  "visible_message": "%s",
+  "user_intent": "%s",
+  "state_action": "chat_only",
+  "confidence": 0.86,
+  "needs_clarification": false,
+  "input_type": "formal_answer",
+  "agent_message": "兼容旧字段不应该覆盖 visible_message",
+  "score": %d,
+  "feedback": "这段反馈不应该保存。",
+  "topic": "Agent 工具调用",
+  "weakness_tags": ["Agent 工具调用"],
+  "next_action": "ask_followup",
+  "should_update_practice_state": true,
+  "practice_updates": [{"topic":"Agent 工具调用","score":%d,"feedback":"不应写入练习状态。"}],
+  "should_complete_mock": false,
+  "follow_up_reason": "不应保存正式追问原因。",
+  "topic_tags": ["Agent 工具调用"],
+  "next_question": "不应该推进到这个问题"
+}`, visibleMessage, userIntent, score, score)
+}
+
+func sampleMockFormalHintWithBadScoreJSON() string {
+	return `{
+  "visible_message": "可以，先按背景、方案、失败恢复三个层次组织回答。",
+  "user_intent": "ask_hint",
+  "state_action": "record_attempt",
+  "confidence": 0.91,
+  "needs_clarification": false,
+  "input_type": "formal_answer",
+  "agent_message": "这个旧字段不应作为正式追问推进。",
+  "score": 93,
+  "feedback": "这段评分不应该保存。",
+  "topic": "Agent 工具调用",
+  "weakness_tags": ["Agent 工具调用"],
+  "next_action": "ask_followup",
+  "should_update_practice_state": true,
+  "practice_updates": [{"topic":"Agent 工具调用","score":93,"feedback":"不应写入练习状态。"}],
+  "should_complete_mock": false,
+  "follow_up_reason": "不应保存正式追问原因。",
+  "topic_tags": ["Agent 工具调用"],
+  "next_question": "不应该推进到这个问题"
+}`
 }
 
 func sampleMockCompleteJSON() string {

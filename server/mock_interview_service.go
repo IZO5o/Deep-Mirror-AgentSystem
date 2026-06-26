@@ -50,6 +50,21 @@ const (
 	mockNextActionSwitchTopic  = "switch_topic"
 	mockNextActionComplete     = "complete"
 	mockNextActionWaitForInput = "wait_for_answer"
+
+	mockSubmitModeChat         = "chat"
+	mockSubmitModeFormalAnswer = "formal_answer"
+
+	mockUserIntentAnswer     = "answer"
+	mockUserIntentAskHint    = "ask_hint"
+	mockUserIntentAskExplain = "ask_explain"
+	mockUserIntentSmalltalk  = "smalltalk"
+	mockUserIntentUnclear    = "unclear"
+	mockUserIntentCancel     = "cancel"
+
+	mockStateActionRecordAttempt = "record_attempt"
+	mockStateActionChatOnly      = "chat_only"
+	mockStateActionStayCurrent   = "stay_current"
+	mockStateActionCancel        = "cancel"
 )
 
 type mockStartOutput struct {
@@ -60,6 +75,12 @@ type mockStartOutput struct {
 type mockTurnOutput struct {
 	InputType                 string               `json:"input_type"`
 	AgentMessage              string               `json:"agent_message"`
+	VisibleMessage            string               `json:"visible_message"`
+	UserIntent                string               `json:"user_intent"`
+	StateAction               string               `json:"state_action"`
+	Confidence                float64              `json:"confidence"`
+	NeedsClarification        bool                 `json:"needs_clarification"`
+	SubmitMode                string               `json:"submit_mode"`
 	Score                     int                  `json:"score"`
 	Feedback                  string               `json:"feedback"`
 	Topic                     string               `json:"topic"`
@@ -304,13 +325,14 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 	}
 
 	currentQuestion := currentMockQuestion(mock, turns)
+	submitMode := normalizeMockSubmitMode(req.SubmitMode)
 
 	_, runner, err := s.agents.Get(string(agent.AgentTypeMockInterviewer))
 	if err != nil {
 		return vo.MockTurnVO{}, err
 	}
 
-	prompt := buildMockTurnPrompt(input, mock, turns, currentQuestion, req.Answer)
+	prompt := buildMockTurnPrompt(input, mock, turns, currentQuestion, req.Answer, submitMode)
 	inputSnapshot := marshalTraceJSON(map[string]any{
 		"mock_id":                 mock.MockID,
 		"interview_id":            mock.InterviewID,
@@ -320,6 +342,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		"mock_status":             mock.Status,
 		"current_turn":            mock.CurrentTurn,
 		"current_topic":           mock.CurrentTopic,
+		"submit_mode":             submitMode,
 		"existing_turn_count":     len(turns),
 		"current_question_length": len(currentQuestion),
 		"answer_length":           len(req.Answer),
@@ -349,7 +372,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		return vo.MockTurnVO{}, fmt.Errorf("mock interviewer turn failed: %w", err)
 	}
 
-	parsed, err := parseMockTurnOutput(result.Response)
+	parsed, err := parseMockTurnOutput(result.Response, submitMode)
 	if err != nil {
 		log.Warnf("parse mock turn output failed for mock %s: %v, raw=%s", mockID, err, result.Response)
 		_ = s.failMockTurn(mock, len(turns), currentQuestion, req.Answer, result.Response, err.Error())
@@ -415,14 +438,14 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			TurnType:       mockTurnTypeCancellationSummary,
 			Phase:          MockInterviewStatusCancelled,
 			AgentAction:    mockInputTypeCancel,
-			Content:        parsed.AgentMessage,
+			Content:        mockVisibleMessage(parsed),
 			RawAgentOutput: result.Response,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}
 		created = append(created, cancelTurn)
 		updates["status"] = MockInterviewStatusCancelled
-		updates["last_feedback"] = parsed.AgentMessage
+		updates["last_feedback"] = mockVisibleMessage(parsed)
 		responseTurn = cancelTurn
 	} else if parsed.InputType == mockInputTypeHintRequest || parsed.InputType == mockInputTypeExplanationRequest {
 		assistantType := mockTurnTypeHintRequest
@@ -439,7 +462,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			TurnType:            assistantType,
 			Phase:               MockInterviewStatusWaitingAnswer,
 			AgentAction:         mockNextActionWaitForInput,
-			Content:             parsed.AgentMessage,
+			Content:             mockVisibleMessage(parsed),
 			InterviewerQuestion: currentQuestion,
 			NextQuestion:        currentQuestion,
 			RawAgentOutput:      result.Response,
@@ -449,7 +472,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		created = append(created, assistantTurn)
 		updates["status"] = MockInterviewStatusWaitingAnswer
 		responseTurn = assistantTurn
-	} else {
+	} else if isFormalMockAttempt(parsed) {
 		topics := mockPracticeTopics(parsed)
 		evaluationTurn := MockTurn{
 			TurnID:              uuid.New().String(),
@@ -483,7 +506,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		updates["last_feedback"] = parsed.Feedback
 		if parsed.ShouldCompleteMock || parsed.NextAction == mockNextActionComplete {
 			updates["status"] = MockInterviewStatusCompleted
-			updates["final_summary"] = parsed.AgentMessage
+			updates["final_summary"] = mockVisibleMessage(parsed)
 		} else {
 			updates["status"] = MockInterviewStatusWaitingAnswer
 		}
@@ -536,6 +559,11 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			Status:                  AgentDecisionTraceStatusSucceeded,
 		})
 		return toMockTurnVO(responseTurn), nil
+	} else {
+		assistantTurn := buildMockOffRecordTurn(mock, nextIndex, parsed, currentQuestion, result.Response, now)
+		created = append(created, assistantTurn)
+		updates["status"] = MockInterviewStatusWaitingAnswer
+		responseTurn = assistantTurn
 	}
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -584,7 +612,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 }
 
 func buildMockActionTurn(mock MockInterview, turnIndex int, parsed mockTurnOutput, currentQuestion string, raw string, now int64) MockTurn {
-	message := parsed.AgentMessage
+	message := mockVisibleMessage(parsed)
 	action := parsed.NextAction
 	if action == "" {
 		action = mockNextActionAskFollowup
@@ -622,19 +650,46 @@ func buildMockActionTurn(mock MockInterview, turnIndex int, parsed mockTurnOutpu
 	return turn
 }
 
+func buildMockOffRecordTurn(mock MockInterview, turnIndex int, parsed mockTurnOutput, currentQuestion string, raw string, now int64) MockTurn {
+	message := mockVisibleMessage(parsed)
+	turnType := mockTurnTypeFollowupQuestion
+	if parsed.UserIntent == mockUserIntentAskHint || parsed.InputType == mockInputTypeHintRequest {
+		turnType = mockTurnTypeHintRequest
+	} else if parsed.UserIntent == mockUserIntentAskExplain || parsed.InputType == mockInputTypeExplanationRequest {
+		turnType = mockTurnTypeExplanationRequest
+	}
+	return MockTurn{
+		TurnID:              uuid.New().String(),
+		MockID:              mock.MockID,
+		UserID:              mock.UserID,
+		InterviewID:         mock.InterviewID,
+		TurnIndex:           turnIndex,
+		Role:                mockTurnRoleAssistant,
+		TurnType:            turnType,
+		Phase:               MockInterviewStatusWaitingAnswer,
+		AgentAction:         parsed.StateAction,
+		Content:             message,
+		InterviewerQuestion: currentQuestion,
+		NextQuestion:        currentQuestion,
+		RawAgentOutput:      raw,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+}
+
 func mockTurnTraceActions(parsed mockTurnOutput, createdTurnCount int) []string {
 	actions := []string{
 		fmt.Sprintf("created mock_turns: %d", createdTurnCount),
 		"updated mock status",
 	}
-	if parsed.InputType == mockInputTypeFormalAnswer {
+	if isFormalMockAttempt(parsed) {
 		if parsed.ShouldUpdatePracticeState {
 			actions = append(actions, "updated practice_states")
 		} else {
 			actions = append(actions, "skipped practice update")
 		}
 	}
-	if parsed.InputType == mockInputTypeHintRequest || parsed.InputType == mockInputTypeExplanationRequest {
+	if !isFormalMockAttempt(parsed) && parsed.InputType != mockInputTypeCancel {
 		actions = append(actions, "skipped practice update")
 	}
 	if parsed.ShouldCompleteMock || parsed.NextAction == mockNextActionComplete {
@@ -1033,37 +1088,42 @@ Target round: %s`,
 	)
 }
 
-func buildMockTurnPrompt(input mockInput, mock MockInterview, turns []MockTurn, currentQuestion string, answer string) string {
-	return fmt.Sprintf(`Continue a text-only mock interview as a deterministic state machine.
+func buildMockTurnPrompt(input mockInput, mock MockInterview, turns []MockTurn, currentQuestion string, answer string, submitMode string) string {
+	return fmt.Sprintf(`你是固定的 mock_interviewer Agent，正在继续一次文本模拟面试。
 
-Return STRICT JSON only. Do not return Markdown, code fences, or explanations outside JSON.
+只返回严格 JSON。不要返回 Markdown、代码块或 JSON 外解释。
+不要写入 memory_items。不要调用任何 tools。不要新增 Agent。不要创建 coaching plans。
 
-Do not write long-term memory.
-Do not create coaching plans.
-Classify the user input first:
-- formal_answer: the candidate is answering the interviewer question.
-- hint_request: the candidate asks for a hint; do not score or update practice state.
-- explanation_request: the candidate asks for explanation; do not score or update practice state.
-- cancel: the candidate wants to stop; do not score or update practice state.
+本轮 submit_mode: %s
 
-JSON schema:
+新的 JSON schema:
 {
-  "input_type": "formal_answer|hint_request|explanation_request|cancel",
-  "agent_message": "next interviewer message, hint, explanation, or closing summary",
+  "visible_message": "给用户看的中文回复",
+  "user_intent": "answer|ask_hint|ask_explain|smalltalk|unclear|cancel",
+  "state_action": "record_attempt|chat_only|stay_current|cancel",
+  "confidence": 0.0,
+  "needs_clarification": false,
   "score": 72,
-  "feedback": "string",
+  "feedback": "正式评分反馈；没有正式作答时为空字符串",
   "topic": "primary topic",
   "weakness_tags": ["string"],
+  "practice_updates": [{"topic":"string","score":72,"feedback":"string"}],
+  "input_type": "formal_answer|hint_request|explanation_request|cancel",
+  "agent_message": "兼容旧字段；内容与 visible_message 一致",
   "next_action": "ask_followup|switch_topic|complete|wait_for_answer",
   "should_update_practice_state": true,
-  "practice_updates": [{"topic":"string","score":72,"feedback":"string"}],
   "should_complete_mock": false,
-  "follow_up_reason": "string"
+  "follow_up_reason": "string",
+  "next_question": "string"
 }
 
-For formal_answer, give concise feedback, score 0-100, include weakness_tags/practice_updates, then either ask a follow-up, switch topic, or complete.
-For hint_request/explanation_request, keep the same current interviewer question active and set next_action to wait_for_answer.
-For cancel, set input_type to cancel and should_complete_mock to false.
+规则:
+- submit_mode=formal_answer 且用户确实在回答当前面试题时，使用 user_intent=answer + state_action=record_attempt，score 0-100，并给出具体 feedback 和 practice_updates。
+- submit_mode=chat 表示场外提问、提示、解释、寒暄或不清楚表达；必须使用 state_action=chat_only/stay_current，不要使用 record_attempt，不要打分，不要写 feedback，不要写 practice_updates。
+- ask_hint、ask_explain、smalltalk、unclear 都不是正式回答；保持当前 interviewer question active，next_action=wait_for_answer。
+- 只有 cancel 才使用 state_action=cancel；取消时不打分、不更新 practice。
+- visible_message 是用户会看到的回复，默认中文、简洁、直接。
+- 兼容旧字段 input_type、agent_message、next_action，但新字段 user_intent 和 state_action 决定服务端行为。
 
 Mock interview:
 %s
@@ -1094,6 +1154,7 @@ Current interviewer question:
 
 Candidate answer:
 %s`,
+		submitMode,
 		mockInterviewJSON(mock),
 		mockSessionJSON(input.session),
 		mockReportJSON(input.report),
@@ -1136,22 +1197,57 @@ func parseMockStartOutput(raw string) (mockStartOutput, error) {
 	return parsed, nil
 }
 
-func parseMockTurnOutput(raw string) (mockTurnOutput, error) {
+func parseMockTurnOutput(raw string, submitMode string) (mockTurnOutput, error) {
 	cleaned := stripJSONFence(strings.TrimSpace(raw))
 	var parsed mockTurnOutput
 	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
 		return mockTurnOutput{}, fmt.Errorf("parse mock turn JSON: %w", err)
 	}
-	return normalizeMockTurnOutput(parsed), nil
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(cleaned), &rawFields); err != nil {
+		return mockTurnOutput{}, fmt.Errorf("parse mock turn JSON object: %w", err)
+	}
+	return normalizeMockTurnOutput(parsed, rawFields, submitMode), nil
 }
 
-func normalizeMockTurnOutput(parsed mockTurnOutput) mockTurnOutput {
-	if parsed.InputType == "" {
-		parsed.InputType = mockInputTypeFormalAnswer
+func normalizeMockTurnOutput(parsed mockTurnOutput, rawFields map[string]json.RawMessage, submitMode string) mockTurnOutput {
+	submitMode = normalizeMockSubmitMode(submitMode)
+	_, hasUserIntent := rawFields["user_intent"]
+	_, hasStateAction := rawFields["state_action"]
+	legacyInputType := normalizeMockInputType(parsed.InputType)
+	legacyNextAction := normalizeMockNextAction(parsed.NextAction)
+
+	parsed.SubmitMode = submitMode
+	parsed.InputType = legacyInputType
+	parsed.NextAction = legacyNextAction
+	parsed.UserIntent = normalizeMockUserIntent(parsed.UserIntent)
+	parsed.StateAction = normalizeMockStateAction(parsed.StateAction)
+	if strings.TrimSpace(parsed.VisibleMessage) == "" {
+		parsed.VisibleMessage = strings.TrimSpace(parsed.AgentMessage)
 	}
-	if parsed.NextAction == "" {
-		parsed.NextAction = mockNextActionAskFollowup
+	if strings.TrimSpace(parsed.AgentMessage) == "" {
+		parsed.AgentMessage = strings.TrimSpace(parsed.VisibleMessage)
 	}
+	if !hasUserIntent {
+		parsed.UserIntent = legacyMockUserIntent(legacyInputType)
+	}
+	if !hasStateAction {
+		parsed.StateAction = legacyMockStateAction(legacyInputType)
+	}
+	if submitMode == mockSubmitModeChat && parsed.StateAction == mockStateActionRecordAttempt {
+		parsed.StateAction = mockStateActionChatOnly
+	}
+	if parsed.StateAction == mockStateActionRecordAttempt && parsed.UserIntent != mockUserIntentAnswer {
+		parsed.StateAction = mockStateActionChatOnly
+	}
+	if parsed.UserIntent == mockUserIntentSmalltalk || parsed.UserIntent == mockUserIntentUnclear ||
+		parsed.UserIntent == mockUserIntentAskHint || parsed.UserIntent == mockUserIntentAskExplain {
+		if parsed.StateAction != mockStateActionCancel {
+			parsed.StateAction = mockStateActionChatOnly
+		}
+	}
+	parsed.InputType = mockInputTypeForIntent(parsed.UserIntent, legacyInputType)
+	parsed.NextAction = mockNextActionForStateAction(parsed.StateAction, legacyNextAction)
 	if parsed.ShouldCompleteMock {
 		parsed.NextAction = mockNextActionComplete
 	}
@@ -1168,16 +1264,161 @@ func normalizeMockTurnOutput(parsed mockTurnOutput) mockTurnOutput {
 			parsed.AgentMessage = parsed.Feedback
 		}
 	}
+	if strings.TrimSpace(parsed.VisibleMessage) == "" {
+		parsed.VisibleMessage = strings.TrimSpace(parsed.AgentMessage)
+	}
 	if parsed.NextQuestion == "" && (parsed.NextAction == mockNextActionAskFollowup || parsed.NextAction == mockNextActionSwitchTopic) {
-		parsed.NextQuestion = parsed.AgentMessage
+		parsed.NextQuestion = mockVisibleMessage(parsed)
 	}
 	if parsed.Topic == "" && len(parsed.TopicTags) > 0 {
 		parsed.Topic = parsed.TopicTags[0]
 	}
-	if parsed.InputType == mockInputTypeFormalAnswer && len(parsed.TopicTags) > 0 && len(parsed.PracticeUpdates) == 0 {
+	if isFormalMockAttempt(parsed) && len(parsed.TopicTags) > 0 && len(parsed.PracticeUpdates) == 0 {
 		parsed.ShouldUpdatePracticeState = true
 	}
+	if !isFormalMockAttempt(parsed) {
+		parsed = clearMockFormalScoringMetadata(parsed)
+	}
 	return parsed
+}
+
+func normalizeMockSubmitMode(submitMode string) string {
+	if strings.TrimSpace(submitMode) == mockSubmitModeChat {
+		return mockSubmitModeChat
+	}
+	return mockSubmitModeFormalAnswer
+}
+
+func normalizeMockInputType(inputType string) string {
+	switch strings.TrimSpace(inputType) {
+	case mockInputTypeFormalAnswer,
+		mockInputTypeHintRequest,
+		mockInputTypeExplanationRequest,
+		mockInputTypeCancel:
+		return strings.TrimSpace(inputType)
+	default:
+		return mockInputTypeFormalAnswer
+	}
+}
+
+func normalizeMockNextAction(nextAction string) string {
+	switch strings.TrimSpace(nextAction) {
+	case mockNextActionAskFollowup,
+		mockNextActionSwitchTopic,
+		mockNextActionComplete,
+		mockNextActionWaitForInput:
+		return strings.TrimSpace(nextAction)
+	default:
+		return mockNextActionAskFollowup
+	}
+}
+
+func normalizeMockUserIntent(userIntent string) string {
+	switch strings.TrimSpace(userIntent) {
+	case mockUserIntentAnswer,
+		mockUserIntentAskHint,
+		mockUserIntentAskExplain,
+		mockUserIntentSmalltalk,
+		mockUserIntentUnclear,
+		mockUserIntentCancel:
+		return strings.TrimSpace(userIntent)
+	default:
+		return mockUserIntentUnclear
+	}
+}
+
+func normalizeMockStateAction(stateAction string) string {
+	switch strings.TrimSpace(stateAction) {
+	case mockStateActionRecordAttempt,
+		mockStateActionChatOnly,
+		mockStateActionStayCurrent,
+		mockStateActionCancel:
+		return strings.TrimSpace(stateAction)
+	default:
+		return mockStateActionChatOnly
+	}
+}
+
+func legacyMockUserIntent(inputType string) string {
+	switch normalizeMockInputType(inputType) {
+	case mockInputTypeHintRequest:
+		return mockUserIntentAskHint
+	case mockInputTypeExplanationRequest:
+		return mockUserIntentAskExplain
+	case mockInputTypeCancel:
+		return mockUserIntentCancel
+	default:
+		return mockUserIntentAnswer
+	}
+}
+
+func legacyMockStateAction(inputType string) string {
+	switch normalizeMockInputType(inputType) {
+	case mockInputTypeHintRequest, mockInputTypeExplanationRequest:
+		return mockStateActionChatOnly
+	case mockInputTypeCancel:
+		return mockStateActionCancel
+	default:
+		return mockStateActionRecordAttempt
+	}
+}
+
+func mockInputTypeForIntent(userIntent string, fallback string) string {
+	switch normalizeMockUserIntent(userIntent) {
+	case mockUserIntentAskHint:
+		return mockInputTypeHintRequest
+	case mockUserIntentAskExplain:
+		return mockInputTypeExplanationRequest
+	case mockUserIntentCancel:
+		return mockInputTypeCancel
+	case mockUserIntentAnswer:
+		return mockInputTypeFormalAnswer
+	default:
+		if fallback == mockInputTypeHintRequest || fallback == mockInputTypeExplanationRequest || fallback == mockInputTypeCancel {
+			return fallback
+		}
+		return mockInputTypeFormalAnswer
+	}
+}
+
+func mockNextActionForStateAction(stateAction string, fallback string) string {
+	switch normalizeMockStateAction(stateAction) {
+	case mockStateActionRecordAttempt:
+		return fallback
+	case mockStateActionCancel, mockStateActionChatOnly, mockStateActionStayCurrent:
+		return mockNextActionWaitForInput
+	default:
+		return mockNextActionWaitForInput
+	}
+}
+
+func isFormalMockAttempt(parsed mockTurnOutput) bool {
+	return parsed.SubmitMode == mockSubmitModeFormalAnswer &&
+		parsed.UserIntent == mockUserIntentAnswer &&
+		parsed.StateAction == mockStateActionRecordAttempt
+}
+
+func clearMockFormalScoringMetadata(parsed mockTurnOutput) mockTurnOutput {
+	parsed.Score = 0
+	parsed.Feedback = ""
+	parsed.WeaknessTags = nil
+	parsed.TopicTags = nil
+	parsed.PracticeUpdates = nil
+	parsed.ShouldUpdatePracticeState = false
+	parsed.FollowUpReason = ""
+	if parsed.StateAction != mockStateActionCancel {
+		parsed.NextAction = mockNextActionWaitForInput
+		parsed.NextQuestion = ""
+		parsed.ShouldCompleteMock = false
+	}
+	return parsed
+}
+
+func mockVisibleMessage(parsed mockTurnOutput) string {
+	if message := strings.TrimSpace(parsed.VisibleMessage); message != "" {
+		return message
+	}
+	return strings.TrimSpace(parsed.AgentMessage)
 }
 
 func mockPracticeTopics(parsed mockTurnOutput) []string {

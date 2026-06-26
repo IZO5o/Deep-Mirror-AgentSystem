@@ -94,6 +94,63 @@ func TestGoldenMockFormalAnswerAskFollowupUpdatesPractice(t *testing.T) {
 	assertTraceContainsAction(t, trace, "created mock_turns: 3", "updated mock status", "updated practice_states")
 }
 
+func TestGoldenMockTurnTraceAndPromptIncludeSubmitDecisionFields(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+		sampleMockStartJSON(),
+		sampleMockTurnJSON("继续追问工具失败恢复。", 75),
+	}
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{UserID: "user_001", PlanID: planID})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	if _, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{Answer: "我会先讲整体架构。"}); err != nil {
+		t.Fatalf("SubmitMockTurn() error = %v", err)
+	}
+
+	prompt := runners[agent.AgentTypeMockInterviewer].taskQueries[1]
+	for _, want := range []string{
+		"你是固定的 mock_interviewer Agent",
+		"本轮 submit_mode: formal_answer",
+		`"visible_message": "给用户看的中文回复"`,
+		`"user_intent": "answer|ask_hint|ask_explain|smalltalk|unclear|cancel"`,
+		`"state_action": "record_attempt|chat_only|stay_current|cancel"`,
+		"不要写入 memory_items",
+		"不要调用任何 tools",
+		"不要新增 Agent",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("mock turn prompt missing %q\nprompt:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Do not write long-term memory") {
+		t.Fatalf("mock turn prompt should use Chinese memory boundary, got: %s", prompt)
+	}
+
+	trace := mustFindSingleTrace(t, s, AgentDecisionTraceQuery{
+		SourceType: AgentTraceSourceMockInterview,
+		SourceID:   mock.MockID,
+		StepName:   AgentTraceStepMockTurn,
+		Status:     AgentDecisionTraceStatusSucceeded,
+	})
+	if !strings.Contains(trace.InputSnapshot, `"submit_mode":"formal_answer"`) {
+		t.Fatalf("trace input snapshot missing submit_mode: %s", trace.InputSnapshot)
+	}
+	for _, want := range []string{
+		`"submit_mode":"formal_answer"`,
+		`"user_intent":"answer"`,
+		`"state_action":"record_attempt"`,
+		`"confidence"`,
+		`"needs_clarification"`,
+		`"visible_message":"继续追问工具失败恢复。"`,
+	} {
+		if !strings.Contains(trace.ParsedDecision, want) {
+			t.Fatalf("trace parsed decision missing %q: %s", want, trace.ParsedDecision)
+		}
+	}
+}
+
 func TestGoldenMockFormalAnswerSwitchTopic(t *testing.T) {
 	s, runners := newTestServerWithFakeAgents(t)
 	session, planID := createMockReadyInterview(t, s, runners)
