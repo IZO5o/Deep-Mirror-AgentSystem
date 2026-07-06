@@ -166,7 +166,7 @@ func TestAgentEvaluationDetectsMemoryItemsBoundaryViolation(t *testing.T) {
 		InputSnapshot:  `{"session_id":"memory_boundary"}`,
 		RawAgentOutput: `{"candidates":[]}`,
 		ParsedDecision: `{"candidates":[]}`,
-		ServiceActions: `["generated memory_candidates: 1","created memory_items: 1"]`,
+		ServiceActions: `["generated memory_candidates: 1","generated memory_events: 1","created memory_items: 1"]`,
 		Status:         AgentDecisionTraceStatusSucceeded,
 	})
 

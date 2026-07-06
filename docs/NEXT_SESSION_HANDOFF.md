@@ -2,6 +2,8 @@
 
 本文档是后续单一代码会话的主入口。新会话的目标不是一次性做完所有事情，而是按合理计划拆小任务，在用户允许后逐步实现、验证和交付。
 
+MVP landing boundary: accepted `memory_items`, selected `practice_states`, persistent per-session state, compact history, and completed coaching/mock `memory_events` are the landed memory/context path. `memory_events` are recorded after completed artifacts but are not selected or injected into prompts.
+
 ## 1. 会话角色
 
 你是本项目的代码执行会话。所有反馈必须使用中文。
@@ -87,6 +89,7 @@
 - mock interview 状态机。
 - coaching/mock formal answer 更新 `practice_states`。
 - completed coaching/mock 生成长期记忆候选。
+- completed coaching/mock 生成事实型 `memory_events`，只作为训练时间线记录，不注入 prompt。
 - agent decision traces。
 - failure injection tests、golden tests。
 - trace-based evaluation harness。
@@ -115,6 +118,7 @@ Landing 已完成：
 - `memory_items` 只能通过 `memory_candidates -> accept/reject -> memory_items`。
 - `practice_states` 是训练动态状态，不替代长期记忆。
 - 不在当前 landing 阶段引入 MCP、OpenAI function calling、ReAct。
+- 不把 `memory_events` 用于 prompt 注入、LLM rerank、动态预算或 ProfileRebaser。
 - 不把项目改成通用聊天机器人。
 - 不为了前端方便破坏后端状态机。
 - 不一次性做完所有 Landing 阶段。
