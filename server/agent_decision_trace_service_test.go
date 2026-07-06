@@ -137,8 +137,10 @@ func TestAgentDecisionTraceMemoryCandidateGenerationSuccess(t *testing.T) {
 			SourceID:   completed.Session.SessionID,
 			StepName:   AgentTraceStepCoachingSessionMemoryCandidates,
 		})
-		if len(traces) != 1 || !strings.Contains(traces[0].ServiceActions, "generated memory_candidates: 1") {
-			t.Fatalf("coaching memory trace = %#v", traces)
+		if len(traces) != 1 ||
+			!strings.Contains(traces[0].ServiceActions, "generated memory_candidates: 1") ||
+			!strings.Contains(traces[0].ServiceActions, "generated memory_events: 2") {
+			t.Fatalf("trace service_actions = %s, want generated candidates and events", traces[0].ServiceActions)
 		}
 	})
 
@@ -155,8 +157,10 @@ func TestAgentDecisionTraceMemoryCandidateGenerationSuccess(t *testing.T) {
 			SourceID:   completed.MockID,
 			StepName:   AgentTraceStepMockInterviewMemoryCandidates,
 		})
-		if len(traces) != 1 || !strings.Contains(traces[0].ServiceActions, "generated memory_candidates: 1") {
-			t.Fatalf("mock memory trace = %#v", traces)
+		if len(traces) != 1 ||
+			!strings.Contains(traces[0].ServiceActions, "generated memory_candidates: 1") ||
+			!strings.Contains(traces[0].ServiceActions, "generated memory_events: 1") {
+			t.Fatalf("trace service_actions = %s, want generated candidates and events", traces[0].ServiceActions)
 		}
 	})
 }

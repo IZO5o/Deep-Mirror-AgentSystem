@@ -298,6 +298,77 @@ func TestGenerateMemoryCandidatesFromCoachingSessionIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestGenerateMemoryCandidatesFromCoachingSessionCreatesMemoryEvents(t *testing.T) {
+	s, runners, completed := createCompletedCoachingSessionForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceCoachingSession, "coaching stable weakness")
+
+	if _, err := s.GenerateMemoryCandidatesFromCoachingSession(context.Background(), completed.Session.SessionID); err != nil {
+		t.Fatalf("GenerateMemoryCandidatesFromCoachingSession() error = %v", err)
+	}
+
+	events := loadMemoryEventsBySource(t, s, MemorySourceCoachingSession, completed.Session.SessionID)
+	if len(events) != 2 {
+		t.Fatalf("events length = %d, want 2; events=%#v", len(events), events)
+	}
+	for _, event := range events {
+		if event.UserID != completed.Session.UserID || event.SourceType != MemorySourceCoachingSession || event.SourceID != completed.Session.SessionID {
+			t.Fatalf("event ownership/source = %#v, want completed coaching session", event)
+		}
+		if !strings.Contains(event.Observation, "completed coaching task") || event.ScoreTrend == "" {
+			t.Fatalf("event missing factual observation/score trend: %#v", event)
+		}
+	}
+}
+
+func TestGenerateMemoryCandidatesFromCoachingSessionEventsAreIdempotent(t *testing.T) {
+	s, runners, completed := createCompletedCoachingSessionForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceCoachingSession, "coaching stable weakness")
+
+	if _, err := s.GenerateMemoryCandidatesFromCoachingSession(context.Background(), completed.Session.SessionID); err != nil {
+		t.Fatalf("first GenerateMemoryCandidatesFromCoachingSession() error = %v", err)
+	}
+	firstEvents := loadMemoryEventsBySource(t, s, MemorySourceCoachingSession, completed.Session.SessionID)
+
+	if _, err := s.GenerateMemoryCandidatesFromCoachingSession(context.Background(), completed.Session.SessionID); err != nil {
+		t.Fatalf("second GenerateMemoryCandidatesFromCoachingSession() error = %v", err)
+	}
+	secondEvents := loadMemoryEventsBySource(t, s, MemorySourceCoachingSession, completed.Session.SessionID)
+
+	if len(firstEvents) != len(secondEvents) {
+		t.Fatalf("event count changed from %d to %d", len(firstEvents), len(secondEvents))
+	}
+	for i := range firstEvents {
+		if firstEvents[i].EventID != secondEvents[i].EventID {
+			t.Fatalf("event[%d] id changed from %q to %q", i, firstEvents[i].EventID, secondEvents[i].EventID)
+		}
+	}
+}
+
+func TestGenerateMemoryCandidatesFromCoachingSessionBackfillsMissingEventsForExistingCandidates(t *testing.T) {
+	s, runners, completed := createCompletedCoachingSessionForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceCoachingSession, "coaching stable weakness")
+
+	if _, err := s.GenerateMemoryCandidatesFromCoachingSession(context.Background(), completed.Session.SessionID); err != nil {
+		t.Fatalf("first GenerateMemoryCandidatesFromCoachingSession() error = %v", err)
+	}
+	if err := s.db.Where("source_type = ? AND source_id = ?", MemorySourceCoachingSession, completed.Session.SessionID).
+		Delete(&MemoryEvent{}).Error; err != nil {
+		t.Fatalf("delete memory events: %v", err)
+	}
+	beforeCalls := runners[agent.AgentTypeMemoryCurator].taskCalls
+
+	if _, err := s.GenerateMemoryCandidatesFromCoachingSession(context.Background(), completed.Session.SessionID); err != nil {
+		t.Fatalf("second GenerateMemoryCandidatesFromCoachingSession() error = %v", err)
+	}
+	events := loadMemoryEventsBySource(t, s, MemorySourceCoachingSession, completed.Session.SessionID)
+	if len(events) != 2 {
+		t.Fatalf("events length = %d, want 2; events=%#v", len(events), events)
+	}
+	if runners[agent.AgentTypeMemoryCurator].taskCalls != beforeCalls {
+		t.Fatalf("memory curator calls = %d, want unchanged %d", runners[agent.AgentTypeMemoryCurator].taskCalls, beforeCalls)
+	}
+}
+
 func TestGenerateMemoryCandidatesFromCompletedMockInterview(t *testing.T) {
 	s, runners, mock := createCompletedMockInterviewForMemoryCandidates(t)
 	beforeItems, err := s.ListMemoryItems("user_001")
@@ -375,6 +446,76 @@ func TestGenerateMemoryCandidatesFromMockInterviewIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestGenerateMemoryCandidatesFromMockInterviewCreatesMemoryEvents(t *testing.T) {
+	s, runners, mock := createCompletedMockInterviewForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceMockInterview, "mock stable weakness")
+
+	if _, err := s.GenerateMemoryCandidatesFromMockInterview(context.Background(), mock.MockID); err != nil {
+		t.Fatalf("GenerateMemoryCandidatesFromMockInterview() error = %v", err)
+	}
+
+	events := loadMemoryEventsBySource(t, s, MemorySourceMockInterview, mock.MockID)
+	if len(events) != 1 {
+		t.Fatalf("events length = %d, want 1; events=%#v", len(events), events)
+	}
+	event := events[0]
+	if event.UserID != mock.UserID || event.SourceType != MemorySourceMockInterview || event.SourceID != mock.MockID {
+		t.Fatalf("event ownership/source = %#v, want completed mock interview", event)
+	}
+	if !strings.Contains(event.Observation, "completed mock interview topic") || event.ScoreTrend == "" {
+		t.Fatalf("event missing factual observation/score trend: %#v", event)
+	}
+}
+
+func TestGenerateMemoryCandidatesFromMockInterviewEventsAreIdempotent(t *testing.T) {
+	s, runners, mock := createCompletedMockInterviewForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceMockInterview, "mock stable weakness")
+
+	if _, err := s.GenerateMemoryCandidatesFromMockInterview(context.Background(), mock.MockID); err != nil {
+		t.Fatalf("first GenerateMemoryCandidatesFromMockInterview() error = %v", err)
+	}
+	firstEvents := loadMemoryEventsBySource(t, s, MemorySourceMockInterview, mock.MockID)
+
+	if _, err := s.GenerateMemoryCandidatesFromMockInterview(context.Background(), mock.MockID); err != nil {
+		t.Fatalf("second GenerateMemoryCandidatesFromMockInterview() error = %v", err)
+	}
+	secondEvents := loadMemoryEventsBySource(t, s, MemorySourceMockInterview, mock.MockID)
+
+	if len(firstEvents) != len(secondEvents) {
+		t.Fatalf("event count changed from %d to %d", len(firstEvents), len(secondEvents))
+	}
+	for i := range firstEvents {
+		if firstEvents[i].EventID != secondEvents[i].EventID {
+			t.Fatalf("event[%d] id changed from %q to %q", i, firstEvents[i].EventID, secondEvents[i].EventID)
+		}
+	}
+}
+
+func TestGenerateMemoryCandidatesFromMockInterviewBackfillsMissingEventsForExistingCandidates(t *testing.T) {
+	s, runners, mock := createCompletedMockInterviewForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceMockInterview, "mock stable weakness")
+
+	if _, err := s.GenerateMemoryCandidatesFromMockInterview(context.Background(), mock.MockID); err != nil {
+		t.Fatalf("first GenerateMemoryCandidatesFromMockInterview() error = %v", err)
+	}
+	if err := s.db.Where("source_type = ? AND source_id = ?", MemorySourceMockInterview, mock.MockID).
+		Delete(&MemoryEvent{}).Error; err != nil {
+		t.Fatalf("delete memory events: %v", err)
+	}
+	beforeCalls := runners[agent.AgentTypeMemoryCurator].taskCalls
+
+	if _, err := s.GenerateMemoryCandidatesFromMockInterview(context.Background(), mock.MockID); err != nil {
+		t.Fatalf("second GenerateMemoryCandidatesFromMockInterview() error = %v", err)
+	}
+	events := loadMemoryEventsBySource(t, s, MemorySourceMockInterview, mock.MockID)
+	if len(events) != 1 {
+		t.Fatalf("events length = %d, want 1; events=%#v", len(events), events)
+	}
+	if runners[agent.AgentTypeMemoryCurator].taskCalls != beforeCalls {
+		t.Fatalf("memory curator calls = %d, want unchanged %d", runners[agent.AgentTypeMemoryCurator].taskCalls, beforeCalls)
+	}
+}
+
 func TestGenerateMemoryCandidatesFromSessionParseFailureDoesNotWriteCandidates(t *testing.T) {
 	s, runners, completed := createCompletedCoachingSessionForMemoryCandidates(t)
 	runners[agent.AgentTypeMemoryCurator].taskResponse = "not json"
@@ -385,6 +526,74 @@ func TestGenerateMemoryCandidatesFromSessionParseFailureDoesNotWriteCandidates(t
 	count := countMemoryCandidatesBySourceRef(t, s, MemorySourceCoachingSession, completed.Session.SessionID)
 	if count != 0 {
 		t.Fatalf("source candidates count = %d, want 0", count)
+	}
+}
+
+func TestGenerateMemoryCandidatesFromSessionParseFailureDoesNotWriteEvents(t *testing.T) {
+	s, runners, completed := createCompletedCoachingSessionForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = "not json"
+
+	if _, err := s.GenerateMemoryCandidatesFromCoachingSession(context.Background(), completed.Session.SessionID); err == nil {
+		t.Fatalf("GenerateMemoryCandidatesFromCoachingSession() error = nil, want parse error")
+	}
+	count := countMemoryEventsBySource(t, s, MemorySourceCoachingSession, completed.Session.SessionID)
+	if count != 0 {
+		t.Fatalf("source events count = %d, want 0", count)
+	}
+}
+
+func TestGenerateMemoryCandidatesFromMockParseFailureDoesNotWriteEvents(t *testing.T) {
+	s, runners, mock := createCompletedMockInterviewForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = "not json"
+
+	if _, err := s.GenerateMemoryCandidatesFromMockInterview(context.Background(), mock.MockID); err == nil {
+		t.Fatalf("GenerateMemoryCandidatesFromMockInterview() error = nil, want parse error")
+	}
+	count := countMemoryEventsBySource(t, s, MemorySourceMockInterview, mock.MockID)
+	if count != 0 {
+		t.Fatalf("source events count = %d, want 0", count)
+	}
+}
+
+func TestGenerateMemoryCandidatesFromCoachingSessionDoesNotWriteMemoryItemsBeforeAccept(t *testing.T) {
+	s, runners, completed := createCompletedCoachingSessionForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceCoachingSession, "coaching stable weakness")
+	beforeItems, err := s.ListMemoryItems(completed.Session.UserID)
+	if err != nil {
+		t.Fatalf("ListMemoryItems() before error = %v", err)
+	}
+
+	if _, err := s.GenerateMemoryCandidatesFromCoachingSession(context.Background(), completed.Session.SessionID); err != nil {
+		t.Fatalf("GenerateMemoryCandidatesFromCoachingSession() error = %v", err)
+	}
+
+	afterItems, err := s.ListMemoryItems(completed.Session.UserID)
+	if err != nil {
+		t.Fatalf("ListMemoryItems() after error = %v", err)
+	}
+	if len(afterItems) != len(beforeItems) {
+		t.Fatalf("memory items length changed from %d to %d before explicit accept", len(beforeItems), len(afterItems))
+	}
+}
+
+func TestGenerateMemoryCandidatesFromMockInterviewDoesNotWriteMemoryItemsBeforeAccept(t *testing.T) {
+	s, runners, mock := createCompletedMockInterviewForMemoryCandidates(t)
+	runners[agent.AgentTypeMemoryCurator].taskResponse = sampleSourceMemoryCandidateJSON(MemorySourceMockInterview, "mock stable weakness")
+	beforeItems, err := s.ListMemoryItems(mock.UserID)
+	if err != nil {
+		t.Fatalf("ListMemoryItems() before error = %v", err)
+	}
+
+	if _, err := s.GenerateMemoryCandidatesFromMockInterview(context.Background(), mock.MockID); err != nil {
+		t.Fatalf("GenerateMemoryCandidatesFromMockInterview() error = %v", err)
+	}
+
+	afterItems, err := s.ListMemoryItems(mock.UserID)
+	if err != nil {
+		t.Fatalf("ListMemoryItems() after error = %v", err)
+	}
+	if len(afterItems) != len(beforeItems) {
+		t.Fatalf("memory items length changed from %d to %d before explicit accept", len(beforeItems), len(afterItems))
 	}
 }
 
@@ -452,6 +661,28 @@ func countMemoryCandidatesBySourceRef(t *testing.T, s *Server, sourceRefType str
 		Where("source_ref_type = ? AND source_ref_id = ?", sourceRefType, sourceRefID).
 		Count(&count).Error; err != nil {
 		t.Fatalf("count memory candidates: %v", err)
+	}
+	return count
+}
+
+func loadMemoryEventsBySource(t *testing.T, s *Server, sourceType string, sourceID string) []MemoryEvent {
+	t.Helper()
+	var events []MemoryEvent
+	if err := s.db.Where("source_type = ? AND source_id = ?", sourceType, sourceID).
+		Order("topic asc, created_at asc").
+		Find(&events).Error; err != nil {
+		t.Fatalf("load memory events: %v", err)
+	}
+	return events
+}
+
+func countMemoryEventsBySource(t *testing.T, s *Server, sourceType string, sourceID string) int64 {
+	t.Helper()
+	var count int64
+	if err := s.db.Model(&MemoryEvent{}).
+		Where("source_type = ? AND source_id = ?", sourceType, sourceID).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count memory events: %v", err)
 	}
 	return count
 }

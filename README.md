@@ -1,8 +1,24 @@
-# Agent Web Base
+# Deep-Mirror-AgentSystem
 
-这是一个用 Go + Vue 实现的面向求职面试复盘与训练执行的多 Agent Web 项目。项目主线不是通用聊天机器人，而是把真实面试输入转化为结构化复盘、用户确认后的长期记忆、二面辅导计划、模拟面试训练和可评测的练习状态。
+Deep-Mirror-AgentSystem 是一个基于 Go + Vue 的面试复盘与二面训练 Agent 系统。它不是通用聊天机器人，而是围绕真实面试输入构建的业务闭环：从 transcript 复盘、可信长期记忆、二面辅导计划、模拟面试训练，到练习状态追踪和 Agent 决策评测。
 
-核心链路：
+项目重点不在“接了多少模型接口”，而在把 LLM 输出放进可控的服务端状态机、可信记忆边界和可验证的工程流程里。
+
+## 项目解决什么问题
+
+真实面试之后，候选人的有效信息通常散落在录音、转写、个人笔记、临时反馈和模糊印象里，很难沉淀成下一轮面试可复用的训练资产。
+
+本项目把这个过程产品化：
+
+- 将真实面试内容转成结构化复盘报告和问题清单。
+- 从复盘与训练过程中提取候选长期记忆。
+- 只在用户确认后写入正式长期记忆。
+- 基于长期记忆和练习状态生成二面辅导计划。
+- 用服务端状态机推进 coaching session 和 mock interview。
+- 将正式训练表现写入 `practice_states`，避免污染长期记忆。
+- 记录 Agent 决策 trace，并用规则评测关键边界是否被破坏。
+
+## 核心流程
 
 ```text
 真实面试输入
@@ -13,52 +29,49 @@
 -> coaching plan / coaching session
 -> mock interview
 -> practice_states
+-> completed coaching/mock memory_events
 -> agent_decision_traces / evaluations
 ```
 
-## 当前能力
+## 核心能力
 
-- 手动 transcript 写入，适合作为稳定 demo 主路径。
-- 音频/视频上传、异步 ASR、视频提取音频。
-- 短 transcript 直接 review，长 transcript 自动分段 review。
-- 生成 `interview_review_reports` 和 `interview_questions`。
-- 从 review、completed coaching session、completed mock interview 生成 `memory_candidates`。
-- 用户 accept/reject 后才写入正式 `memory_items`。
-- 生成二面准备 `coaching_plans` / `coaching_tasks`。
-- plan 级别 `coaching_sessions`，支持多轮 submit、attempt、pause/cancel 和状态恢复。
-- `mock_interviews` 状态机，支持 opening question、formal answer、hint/explanation、follow-up、topic switch、complete/cancel/failed。
-- coaching/mock 的正式回答更新 `practice_states`。
-- `agent_decision_traces` 记录关键 Agent 执行快照。
-- `agent-evaluations` 基于 trace 做规则评测。
-- Vue/Vite Demo Console 支持手动 transcript 主链路、候选记忆选择、coaching/mock 会话状态查看和 debug 输出。
+- **面试复盘链路**：支持手动 transcript、音视频上传、异步 ASR、视频提取音频、短文本直接复盘和长 transcript 分段复盘。
+- **可信长期记忆**：Agent 只能生成 `memory_candidates`，正式 `memory_items` 必须经过用户 accept/reject。
+- **二面辅导状态机**：生成 `coaching_plans` / `coaching_tasks`，并通过 plan 级 `coaching_sessions` 管理 submit、attempt、pause/cancel、complete 和失败恢复。
+- **模拟面试状态机**：支持 opening question、formal answer、hint、explanation、follow-up、topic switch、complete、cancel 和 failed 状态。
+- **练习状态追踪**：coaching/mock 的正式回答更新 `practice_states`，用于表达训练掌握度，不替代长期记忆。
+- **事实型训练事件**：completed coaching/mock artifact 会生成 factual `memory_events`，用于训练时间线和审计；当前 MVP 不把这些事件注入 prompt。
+- **Trace 与评测**：`agent_decision_traces` 保存关键 Agent 的输入、输出、解析结果和服务端动作；`agent-evaluations` 用规则检查状态推进、上下文选择和记忆写入边界。
+- **Vue Demo Console**：提供手动 transcript 主链路、候选记忆选择、coaching/mock 状态查看和 debug 输出。
 
-## 固定 4 个业务 Agent
+## 架构设计
 
-当前只允许 4 个业务 Agent：
+当前系统固定 4 个业务 Agent：
 
-- `review`：分析 transcript，生成复盘报告和结构化问答。
-- `memory_curator`：生成候选长期记忆，只写 `memory_candidates`。
-- `second_round_coach`：生成二面准备计划，并推进 coaching session。
-- `mock_interviewer`：执行模拟面试状态机。
+| Agent | 职责 |
+| --- | --- |
+| `review` | 分析 transcript，生成复盘报告和结构化问答。 |
+| `memory_curator` | 生成候选长期记忆，只写 `memory_candidates`。 |
+| `second_round_coach` | 生成二面准备计划，并推进 coaching session。 |
+| `mock_interviewer` | 执行模拟面试状态机。 |
 
-长期记忆边界：
+长期记忆写入边界：
 
 ```text
 memory_candidates -> accept/reject -> memory_items
 ```
 
-Agent 不允许直接写 `memory_items`。`practice_states` 是训练动态状态，不替代正式长期记忆。
+Agent 不允许直接创建或更新正式 `memory_items`。`practice_states` 表达训练动态状态，不污染长期记忆。`memory_events` 只记录 completed artifact 的事实型时间线；event prompt injection、event rerank、动态 event budget 和 ProfileRebaser 仍是后续阶段能力。
 
-## 当前不做
+## 技术栈
 
-- 不新增第 5 个业务 Agent。
-- 不复活 `study_planner` 为独立业务 Agent。
-- 不把项目改成通用聊天机器人。
-- 不让 Agent 直接写 `memory_items`。
-- 不在当前主流程中引入 MCP、OpenAI function calling 或 ReAct。
-- 不为了前端方便破坏 coaching/mock 后端状态机。
+- 后端：Go, Gin, GORM, SQLite
+- 前端：Vue 3, Vite
+- AI 能力：OpenAI-compatible LLM / ASR 配置
+- 媒体处理：FFmpeg
+- 测试：Go tests, golden tests, failure-injection tests, trace-based evaluation checks
 
-## 启动后端
+## 快速启动
 
 准备配置：
 
@@ -68,7 +81,7 @@ cp config.example.json config.json
 
 填写 `config.json` 中的 LLM/ASR 配置。手动 transcript demo 不依赖真实 ASR，但 review、memory、coaching、mock 都需要可用 LLM 配置。
 
-启动：
+启动后端：
 
 ```bash
 go run ./main
@@ -86,9 +99,7 @@ http://127.0.0.1:8080
 agent-web-base.db
 ```
 
-`mcp-server.json` 是可选配置；缺失时会打印 warning，但当前 demo 主链路不依赖 MCP。
-
-## 启动前端 Demo Console
+启动前端 Demo Console：
 
 ```bash
 cd frontend
@@ -108,14 +119,16 @@ Vite dev server 会将 `/api` proxy 到：
 http://127.0.0.1:8080
 ```
 
-Demo Console 的推荐使用路径：
+## 推荐 Demo 路径
+
+最稳定的演示路径是手动 transcript：
 
 ```text
 create/select interview
 -> upsert manual transcript
 -> trigger/get review
 -> generate/list review memory candidates
--> 勾选并 accept selected candidates
+-> accept selected candidates
 -> list memory_items
 -> generate/get coaching plan
 -> start/get coaching session
@@ -126,15 +139,17 @@ create/select interview
 -> list traces/evaluations
 ```
 
-如果真实 LLM 配置不可用，页面会展示后端返回的错误；不要把这种情况理解成前端或后端主链路已经跑通。
+如果真实 LLM 配置不可用，页面会展示后端返回的错误。这代表 provider 配置或调用路径失败，不代表前端流程或后端状态机是 mock 的。
 
-## 文档入口
+## 当前边界
 
-- [Demo Guide](docs/DEMO_GUIDE.md)：面向演示者的前后端使用说明。
-- [Demo API Flow](docs/DEMO_API_FLOW.md)：可复制的 API 级 demo path。
-- [Next Session Handoff](docs/NEXT_SESSION_HANDOFF.md)：后续代码会话交接说明。
-- [Project Programming Standard](PROJECT_PROGRAMMING_STANDARD.md)：项目边界和协作标准。
-- [Engineering Highlights](ENGINEERING_HIGHLIGHTS.md)：工程亮点记录。
+- 不新增第 5 个业务 Agent。
+- 不复活 `study_planner` 为独立业务 Agent。
+- 不把项目改成通用聊天机器人。
+- 不让 Agent 直接写正式 `memory_items`。
+- 不把 `memory_events` 用于 prompt 注入、LLM rerank、动态预算或 ProfileRebaser。
+- 不在当前主流程中引入 MCP、OpenAI function calling 或 ReAct。
+- 不为了前端方便绕过 coaching/mock 后端状态机。
 
 ## 测试
 
@@ -153,11 +168,10 @@ npm run build
 
 真实 LLM/ASR 相关测试通过 build tag 隔离，运行前需要确认配置、成本和耗时。
 
-## 工程亮点
+## 文档
 
-- 长 transcript 分段 review，避免把超长原文一次性塞进 prompt。
-- `memory_candidates` 与 `memory_items` 分离，用用户确认保护长期记忆。
-- `practice_states` 单独表达训练掌握度，不污染长期记忆。
-- coaching/mock 都是业务状态机，不是泛聊天。
-- Agent 输出使用严格 JSON，失败时保存 raw output/error。
-- failure injection tests、golden tests 和 trace-based evaluation harness 覆盖关键状态转移和边界。
+- [Demo Guide](docs/DEMO_GUIDE.md)：前后端演示说明。
+- [Demo API Flow](docs/DEMO_API_FLOW.md)：可复制的 API 级 demo path。
+- [Next Session Handoff](docs/NEXT_SESSION_HANDOFF.md)：后续代码会话交接说明。
+- [Project Programming Standard](PROJECT_PROGRAMMING_STANDARD.md)：项目边界和协作标准。
+- [Engineering Highlights](ENGINEERING_HIGHLIGHTS.md)：工程亮点记录。

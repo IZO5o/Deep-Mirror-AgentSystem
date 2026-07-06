@@ -9,7 +9,7 @@
 本项目是一个 Go 实现的面向求职面试复盘与训练执行的多 Agent Web 系统，主线是：
 
 ```text
-真实面试输入 -> transcript -> review -> memory_candidates -> 用户确认 memory_items -> coaching -> mock interview -> practice_states -> trace/evaluation
+真实面试输入 -> transcript -> review -> memory_candidates -> 用户确认 memory_items -> coaching -> mock interview -> practice_states -> completed coaching/mock memory_events -> trace/evaluation
 ```
 
 当前固定 4 个业务 Agent：
@@ -56,6 +56,7 @@ server.InitDB("agent-web-base.db")
 - `interview_review_reports`
 - `memory_candidates`
 - `memory_items`
+- `memory_events`
 - `coaching_plans`
 - `coaching_tasks`
 - `coaching_sessions`
@@ -724,6 +725,8 @@ curl -sS -X POST "$API/mock-interviews/$MOCK_ID/memory-candidates"
 下一步条件：source 对象必须先是 `completed`。未完成、failed、cancelled、paused、in_progress 状态不允许生成。
 
 重复触发同一 source 的候选生成会复用已有 pending/accepted candidates，不重复调用 Agent。
+
+生成 completed coaching/mock 的 memory candidates 后，后端会同步写入事实型 `memory_events`。这些 events 只作为审计友好的训练时间线记录；当前 MVP 不提供 event 注入、event rerank 或 profile rebase。
 
 ### 3.19 Accept Selected Candidates Again
 

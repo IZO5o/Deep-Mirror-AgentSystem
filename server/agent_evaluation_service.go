@@ -152,6 +152,7 @@ func addServiceActionChecks(add func(string, bool, string), trace vo.AgentDecisi
 		addMockTurnActionChecks(add, trace, actions)
 	case AgentTraceStepCoachingSessionMemoryCandidates, AgentTraceStepMockInterviewMemoryCandidates:
 		add("service_actions_memory_candidates", strings.Contains(actions, "generated memory_candidates"), "memory candidate generation should report generated memory_candidates")
+		add("service_actions_memory_events", strings.Contains(actions, "generated memory_events"), "memory candidate generation should report generated memory_events")
 	default:
 		add("service_actions_known_step", true, "no step-specific service action rule")
 	}

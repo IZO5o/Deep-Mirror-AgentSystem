@@ -333,6 +333,18 @@ type AgentDecisionTrace struct {
 	CreatedAt               int64
 }
 
+// MemoryEvent records a factual practice/interview observation for timeline/audit use.
+type MemoryEvent struct {
+	EventID     string `gorm:"primaryKey"`
+	UserID      string `gorm:"index"`
+	SourceType  string `gorm:"index"`
+	SourceID    string `gorm:"index"`
+	Topic       string
+	Observation string
+	ScoreTrend  string
+	CreatedAt   int64
+}
+
 func InitDB(dsn string) (*gorm.DB, error) {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -359,6 +371,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&MockTurn{},
 		&PracticeState{},
 		&AgentDecisionTrace{},
+		&MemoryEvent{},
 	)
 	if err != nil {
 		return nil, err

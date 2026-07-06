@@ -144,6 +144,13 @@ func (s *Server) GenerateMemoryCandidatesFromCoachingSession(ctx context.Context
 		return nil, err
 	}
 	if len(existing) > 0 {
+		input, err := s.loadCoachingSessionMemoryCandidateInput(coachingSession)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.generateMemoryEventsFromCoachingSession(input); err != nil {
+			return nil, err
+		}
 		return toMemoryCandidateVOs(existing), nil
 	}
 
@@ -228,6 +235,27 @@ func (s *Server) GenerateMemoryCandidatesFromCoachingSession(ctx context.Context
 		})
 		return nil, err
 	}
+	events, err := s.generateMemoryEventsFromCoachingSession(input)
+	if err != nil {
+		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
+			UserID:         input.session.UserID,
+			InterviewID:    input.session.InterviewID,
+			AgentType:      string(agent.AgentTypeMemoryCurator),
+			SourceType:     AgentTraceSourceMemoryCandidateGeneration,
+			SourceID:       sessionID,
+			StepName:       AgentTraceStepCoachingSessionMemoryCandidates,
+			InputSnapshot:  inputSnapshot,
+			RawAgentOutput: result.Response,
+			ParsedDecision: marshalTraceJSON(parsed),
+			ServiceActions: marshalTraceJSON([]string{
+				fmt.Sprintf("generated memory_candidates: %d", len(candidates)),
+				"failed to generate memory_events after candidate persistence",
+			}),
+			Status:       AgentDecisionTraceStatusFailed,
+			ErrorMessage: traceErrorMessage(err),
+		})
+		return nil, err
+	}
 	s.recordAgentDecisionTrace(AgentDecisionTraceInput{
 		UserID:         input.session.UserID,
 		InterviewID:    input.session.InterviewID,
@@ -240,6 +268,7 @@ func (s *Server) GenerateMemoryCandidatesFromCoachingSession(ctx context.Context
 		ParsedDecision: marshalTraceJSON(parsed),
 		ServiceActions: marshalTraceJSON([]string{
 			fmt.Sprintf("generated memory_candidates: %d", len(candidates)),
+			fmt.Sprintf("generated memory_events: %d", len(events)),
 		}),
 		Status: AgentDecisionTraceStatusSucceeded,
 	})
@@ -264,6 +293,13 @@ func (s *Server) GenerateMemoryCandidatesFromMockInterview(ctx context.Context, 
 		return nil, err
 	}
 	if len(existing) > 0 {
+		input, err := s.loadMockInterviewMemoryCandidateInput(mock)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.generateMemoryEventsFromMockInterview(input); err != nil {
+			return nil, err
+		}
 		return toMemoryCandidateVOs(existing), nil
 	}
 
@@ -347,6 +383,27 @@ func (s *Server) GenerateMemoryCandidatesFromMockInterview(ctx context.Context, 
 		})
 		return nil, err
 	}
+	events, err := s.generateMemoryEventsFromMockInterview(input)
+	if err != nil {
+		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
+			UserID:         input.session.UserID,
+			InterviewID:    input.session.InterviewID,
+			AgentType:      string(agent.AgentTypeMemoryCurator),
+			SourceType:     AgentTraceSourceMemoryCandidateGeneration,
+			SourceID:       mockID,
+			StepName:       AgentTraceStepMockInterviewMemoryCandidates,
+			InputSnapshot:  inputSnapshot,
+			RawAgentOutput: result.Response,
+			ParsedDecision: marshalTraceJSON(parsed),
+			ServiceActions: marshalTraceJSON([]string{
+				fmt.Sprintf("generated memory_candidates: %d", len(candidates)),
+				"failed to generate memory_events after candidate persistence",
+			}),
+			Status:       AgentDecisionTraceStatusFailed,
+			ErrorMessage: traceErrorMessage(err),
+		})
+		return nil, err
+	}
 	s.recordAgentDecisionTrace(AgentDecisionTraceInput{
 		UserID:         input.session.UserID,
 		InterviewID:    input.session.InterviewID,
@@ -359,6 +416,7 @@ func (s *Server) GenerateMemoryCandidatesFromMockInterview(ctx context.Context, 
 		ParsedDecision: marshalTraceJSON(parsed),
 		ServiceActions: marshalTraceJSON([]string{
 			fmt.Sprintf("generated memory_candidates: %d", len(candidates)),
+			fmt.Sprintf("generated memory_events: %d", len(events)),
 		}),
 		Status: AgentDecisionTraceStatusSucceeded,
 	})
@@ -623,6 +681,207 @@ func (s *Server) findExistingMemoryCandidatesForSource(sourceRefType string, sou
 		return nil, err
 	}
 	return candidates, nil
+}
+
+func (s *Server) generateMemoryEventsFromCoachingSession(input coachingSessionMemoryCandidateInput) ([]MemoryEvent, error) {
+	attemptsByTask := make(map[string][]CoachingTaskAttempt)
+	for _, attempt := range input.attempts {
+		attemptsByTask[attempt.CoachingTaskID] = append(attemptsByTask[attempt.CoachingTaskID], attempt)
+	}
+
+	events := make([]MemoryEvent, 0, len(input.tasks))
+	now := time.Now().Unix()
+	for _, task := range input.tasks {
+		topic := strings.TrimSpace(task.Title)
+		if topic == "" {
+			topic = strings.TrimSpace(task.TaskType)
+		}
+		if topic == "" {
+			continue
+		}
+
+		taskAttempts := attemptsByTask[task.TaskID]
+		latestScore := 0
+		passed := false
+		feedback := ""
+		if len(taskAttempts) > 0 {
+			latest := taskAttempts[len(taskAttempts)-1]
+			latestScore = latest.Score
+			passed = latest.Passed
+			feedback = latest.Feedback
+		}
+		if feedback == "" {
+			feedback = latestCoachingFeedbackForTask(input.turns, task.TaskID)
+		}
+
+		scoreTrend := buildScoreTrend(len(taskAttempts), latestScore, passed)
+		observation := compactObservation([]string{
+			"completed coaching task " + topic,
+			scoreTrend,
+			compactFeedback(feedback),
+		})
+		event, _, err := s.createMemoryEventIfMissing(MemoryEvent{
+			EventID:     uuid.New().String(),
+			UserID:      input.session.UserID,
+			SourceType:  MemorySourceCoachingSession,
+			SourceID:    input.coachingSession.SessionID,
+			Topic:       topic,
+			Observation: observation,
+			ScoreTrend:  scoreTrend,
+			CreatedAt:   now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func (s *Server) generateMemoryEventsFromMockInterview(input mockInterviewMemoryCandidateInput) ([]MemoryEvent, error) {
+	topics := orderedUniqueMockTopics(input)
+	if len(topics) == 0 {
+		return nil, nil
+	}
+
+	latestScore := 0
+	formalCount := 0
+	feedback := strings.TrimSpace(input.mock.LastFeedback)
+	for _, turn := range input.turns {
+		if turn.Score > 0 {
+			formalCount++
+			latestScore = turn.Score
+		}
+		if strings.TrimSpace(turn.Feedback) != "" {
+			feedback = turn.Feedback
+		}
+	}
+
+	scoreTrend := buildMockScoreTrend(formalCount, latestScore)
+	events := make([]MemoryEvent, 0, len(topics))
+	now := time.Now().Unix()
+	for _, topic := range topics {
+		observation := compactObservation([]string{
+			"completed mock interview topic " + topic,
+			scoreTrend,
+			compactFeedback(feedback),
+		})
+		event, _, err := s.createMemoryEventIfMissing(MemoryEvent{
+			EventID:     uuid.New().String(),
+			UserID:      input.session.UserID,
+			SourceType:  MemorySourceMockInterview,
+			SourceID:    input.mock.MockID,
+			Topic:       topic,
+			Observation: observation,
+			ScoreTrend:  scoreTrend,
+			CreatedAt:   now,
+		})
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func (s *Server) createMemoryEventIfMissing(event MemoryEvent) (MemoryEvent, bool, error) {
+	topic := strings.TrimSpace(event.Topic)
+	if topic == "" {
+		return MemoryEvent{}, false, fmt.Errorf("memory event topic is required")
+	}
+	event.Topic = topic
+
+	var existing MemoryEvent
+	err := s.db.Where("user_id = ? AND source_type = ? AND source_id = ? AND topic = ?", event.UserID, event.SourceType, event.SourceID, event.Topic).
+		First(&existing).Error
+	if err == nil {
+		return existing, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return MemoryEvent{}, false, err
+	}
+
+	if strings.TrimSpace(event.EventID) == "" {
+		event.EventID = uuid.New().String()
+	}
+	if event.CreatedAt == 0 {
+		event.CreatedAt = time.Now().Unix()
+	}
+	if err := s.db.Create(&event).Error; err != nil {
+		return MemoryEvent{}, false, err
+	}
+	return event, true, nil
+}
+
+func latestCoachingFeedbackForTask(turns []CoachingSessionTurn, taskID string) string {
+	for i := len(turns) - 1; i >= 0; i-- {
+		turn := turns[i]
+		if turn.CoachingTaskID == taskID && strings.TrimSpace(turn.Feedback) != "" {
+			return turn.Feedback
+		}
+	}
+	return ""
+}
+
+func orderedUniqueMockTopics(input mockInterviewMemoryCandidateInput) []string {
+	seen := make(map[string]bool)
+	topics := make([]string, 0)
+	add := func(topic string) {
+		topic = strings.TrimSpace(topic)
+		if topic == "" || seen[topic] {
+			return
+		}
+		seen[topic] = true
+		topics = append(topics, topic)
+	}
+
+	for _, turn := range input.turns {
+		for _, topic := range unmarshalStringSlice(turn.TopicTags) {
+			add(topic)
+		}
+	}
+	add(input.mock.CurrentTopic)
+	return topics
+}
+
+func buildScoreTrend(attemptCount int, latestScore int, passed bool) string {
+	if attemptCount == 0 {
+		return "completed without scored attempt"
+	}
+	if passed {
+		return fmt.Sprintf("passed after %d attempt(s), latest score %d", attemptCount, latestScore)
+	}
+	return fmt.Sprintf("not passed after %d attempt(s), latest score %d", attemptCount, latestScore)
+}
+
+func buildMockScoreTrend(formalCount int, latestScore int) string {
+	if formalCount == 0 {
+		return "completed without scored formal turn"
+	}
+	return fmt.Sprintf("completed after %d scored turn(s), latest score %d", formalCount, latestScore)
+}
+
+func compactObservation(parts []string) string {
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	return strings.Join(cleaned, " | ")
+}
+
+func compactFeedback(feedback string) string {
+	feedback = strings.Join(strings.Fields(feedback), " ")
+	if feedback == "" {
+		return ""
+	}
+	const maxFeedbackLen = 180
+	if len(feedback) > maxFeedbackLen {
+		feedback = feedback[:maxFeedbackLen] + "..."
+	}
+	return "latest feedback: " + feedback
 }
 
 func (s *Server) saveMemoryCandidates(session InterviewSession, rawOutput string, candidates []memoryCandidateOutput, sourceRef memoryCandidateSourceRef) ([]vo.MemoryCandidateVO, error) {
