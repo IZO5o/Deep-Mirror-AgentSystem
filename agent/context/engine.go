@@ -39,6 +39,11 @@ type Usage struct {
 	PromptTokens int
 }
 
+type CommitOptions struct {
+	ApplyPolicies     bool
+	UpdateAgentMemory bool
+}
+
 type TurnDraft struct {
 	NewMessages []shared.OpenAIMessage
 }
@@ -68,9 +73,20 @@ func (c *Engine) Init(systemPrompt string, budget TokenBudget) {
 }
 
 func (c *Engine) BuildRequestMessages() []shared.OpenAIMessage {
+	return c.BuildRequestMessagesWithSystemContext("")
+}
+
+func (c *Engine) BuildRequestMessagesWithSystemContext(systemContext string) []shared.OpenAIMessage {
 	result := make([]shared.OpenAIMessage, 0, len(c.messages)+1)
-	if c.systemPromptTemplate != "" {
-		result = append(result, openai.SystemMessage(c.BuildSystemPrompt()))
+	if c.systemPromptTemplate != "" || systemContext != "" {
+		systemPrompt := c.BuildSystemPrompt()
+		if systemContext != "" {
+			if systemPrompt != "" {
+				systemPrompt += "\n\n"
+			}
+			systemPrompt += "## Business Context\n" + systemContext
+		}
+		result = append(result, openai.SystemMessage(systemPrompt))
 	}
 	for i := range c.messages {
 		result = append(result, c.messages[i].Message)
@@ -93,6 +109,13 @@ func (c *Engine) SetMessages(messages []shared.OpenAIMessage) {
 }
 
 func (c *Engine) CommitTurn(ctx context.Context, draft TurnDraft, usage Usage, skipPoliciesAndMemory bool) error {
+	return c.CommitTurnWithOptions(ctx, draft, usage, CommitOptions{
+		ApplyPolicies:     !skipPoliciesAndMemory,
+		UpdateAgentMemory: !skipPoliciesAndMemory,
+	})
+}
+
+func (c *Engine) CommitTurnWithOptions(ctx context.Context, draft TurnDraft, usage Usage, opts CommitOptions) error {
 	// 根据情况压缩上下文
 	for i := range draft.NewMessages {
 		msg := draft.NewMessages[i]
@@ -100,12 +123,16 @@ func (c *Engine) CommitTurn(ctx context.Context, draft TurnDraft, usage Usage, s
 	}
 	c.recountTokens()
 
-	if skipPoliciesAndMemory {
+	if opts.ApplyPolicies {
+		if err := c.applyPolicies(ctx); err != nil {
+			return err
+		}
+	}
+	if !opts.UpdateAgentMemory {
 		return nil
 	}
-
-	if err := c.applyPolicies(ctx); err != nil {
-		return err
+	if c.memory == nil {
+		return nil
 	}
 	// 更新记忆
 	if c.onMemoryEvent != nil {

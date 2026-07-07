@@ -26,10 +26,26 @@ type AgentProfile struct {
 	SystemPrompt string
 }
 
+// RunOptions controls per-call context and commit behavior. Callers should
+// start from DefaultRunOptions unless intentionally disabling policy or memory updates.
+type RunOptions struct {
+	SystemContext     string
+	ApplyPolicies     bool
+	UpdateAgentMemory bool
+}
+
+func DefaultRunOptions() RunOptions {
+	return RunOptions{
+		ApplyPolicies:     true,
+		UpdateAgentMemory: true,
+	}
+}
+
 type Runner interface {
 	Model() string
 	RunTask(ctx context.Context, query string) (RunResult, error)
 	RunStreamingWithHistory(ctx context.Context, history []shared.OpenAIMessage, query string, viewCh chan MessageVO, confirmCh chan ConfirmationAction) (RunResult, error)
+	RunStreamingWithContextHistory(ctx context.Context, options RunOptions, history []shared.OpenAIMessage, query string, viewCh chan MessageVO, confirmCh chan ConfirmationAction) (RunResult, error)
 }
 
 type AgentRegistry struct {
@@ -152,4 +168,10 @@ func (r *serializedRunner) RunStreamingWithHistory(ctx context.Context, history 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.runner.RunStreamingWithHistory(ctx, history, query, viewCh, confirmCh)
+}
+
+func (r *serializedRunner) RunStreamingWithContextHistory(ctx context.Context, options RunOptions, history []shared.OpenAIMessage, query string, viewCh chan MessageVO, confirmCh chan ConfirmationAction) (RunResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.runner.RunStreamingWithContextHistory(ctx, options, history, query, viewCh, confirmCh)
 }

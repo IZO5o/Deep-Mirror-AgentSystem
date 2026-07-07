@@ -77,7 +77,7 @@ func TestAgentDecisionTraceCoachingSessionTurnSuccess(t *testing.T) {
 			t.Fatalf("service_actions missing %q: %s", want, trace.ServiceActions)
 		}
 	}
-	if !strings.Contains(trace.InputSnapshot, "recent_turn_count") || !strings.Contains(trace.ParsedDecision, "formal_answer") {
+	if !strings.Contains(trace.InputSnapshot, "history_turn_count") || !strings.Contains(trace.ParsedDecision, "formal_answer") {
 		t.Fatalf("trace missing input/parsed details: %#v", trace)
 	}
 }

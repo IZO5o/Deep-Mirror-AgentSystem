@@ -82,8 +82,8 @@ func TestFailureInjectionCoachingPracticeStateUpdateRollbackTrace(t *testing.T) 
 	session := startTestCoachingSession(t, s, plan.PlanID)
 	taskID := session.Session.CurrentTaskID
 	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 88, "回答达标。", CoachingNextActionPromptNext, false)
-	if err := s.db.Exec("DROP TABLE practice_states").Error; err != nil {
-		t.Fatalf("drop practice_states: %v", err)
+	if err := s.db.Exec("CREATE TRIGGER fail_practice_insert BEFORE INSERT ON practice_states BEGIN SELECT RAISE(FAIL, 'injected practice failure'); END").Error; err != nil {
+		t.Fatalf("create failure trigger: %v", err)
 	}
 
 	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{UserInput: "正式回答", SubmitMode: CoachingSubmitModeFormalAnswer}); err == nil {
@@ -114,7 +114,7 @@ func TestFailureInjectionCoachingPracticeStateUpdateRollbackTrace(t *testing.T) 
 		Status:     AgentDecisionTraceStatusFailed,
 	})
 	assertTraceContainsAction(t, trace, "failed to persist coaching_session_turn")
-	if !strings.Contains(trace.ParsedDecision, CoachingInputTypeFormalAnswer) || !strings.Contains(trace.ErrorMessage, "practice_states") {
+	if !strings.Contains(trace.ParsedDecision, CoachingInputTypeFormalAnswer) || !strings.Contains(trace.ErrorMessage, "injected practice failure") {
 		t.Fatalf("trace missing parsed/error details: %#v", trace)
 	}
 }
