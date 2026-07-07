@@ -210,20 +210,21 @@ type CoachingTask struct {
 }
 
 type CoachingSession struct {
-	SessionID        string `gorm:"primaryKey"`
-	UserID           string `gorm:"index"`
-	InterviewID      string `gorm:"index"`
-	CoachingPlanID   string `gorm:"index"`
-	CurrentTaskID    string `gorm:"index"`
-	Status           string `gorm:"index"`
-	ProgressSummary  string
-	LastAgentMessage string
-	ErrorMessage     string
-	StartedAt        int64
-	LastActiveAt     int64
-	CompletedAt      int64
-	CreatedAt        int64
-	UpdatedAt        int64
+	SessionID            string `gorm:"primaryKey"`
+	UserID               string `gorm:"index"`
+	InterviewID          string `gorm:"index"`
+	CoachingPlanID       string `gorm:"index"`
+	CurrentTaskID        string `gorm:"index"`
+	Status               string `gorm:"index"`
+	ProgressSummary      string
+	LastAgentMessage     string
+	ErrorMessage         string
+	AgentPersistentState *string `gorm:"type:json"`
+	StartedAt            int64
+	LastActiveAt         int64
+	CompletedAt          int64
+	CreatedAt            int64
+	UpdatedAt            int64
 }
 
 type CoachingSessionTurn struct {
@@ -257,22 +258,23 @@ type CoachingTaskAttempt struct {
 }
 
 type MockInterview struct {
-	MockID         string `gorm:"primaryKey"`
-	UserID         string `gorm:"index"`
-	InterviewID    string `gorm:"index"`
-	PlanID         string `gorm:"index"`
-	TargetRound    string `gorm:"index"`
-	Status         string `gorm:"index"`
-	CurrentTurn    int
-	CurrentTopic   string
-	OverallGoal    string
-	FirstQuestion  string
-	LastFeedback   string
-	ErrorMessage   string
-	FinalSummary   string
-	RawAgentOutput string
-	CreatedAt      int64
-	UpdatedAt      int64
+	MockID               string `gorm:"primaryKey"`
+	UserID               string `gorm:"index"`
+	InterviewID          string `gorm:"index"`
+	PlanID               string `gorm:"index"`
+	TargetRound          string `gorm:"index"`
+	Status               string `gorm:"index"`
+	CurrentTurn          int
+	CurrentTopic         string
+	OverallGoal          string
+	FirstQuestion        string
+	LastFeedback         string
+	ErrorMessage         string
+	FinalSummary         string
+	AgentPersistentState *string `gorm:"type:json"`
+	RawAgentOutput       string
+	CreatedAt            int64
+	UpdatedAt            int64
 }
 
 type MockTurn struct {

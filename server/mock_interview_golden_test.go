@@ -109,10 +109,14 @@ func TestGoldenMockTurnTraceAndPromptIncludeSubmitDecisionFields(t *testing.T) {
 		t.Fatalf("SubmitMockTurn() error = %v", err)
 	}
 
-	prompt := runners[agent.AgentTypeMockInterviewer].taskQueries[1]
+	runner := runners[agent.AgentTypeMockInterviewer]
+	if len(runner.systemContexts) == 0 || len(runner.contextQueries) == 0 {
+		t.Fatalf("mock runner missing context-history call: contexts=%d queries=%d", len(runner.systemContexts), len(runner.contextQueries))
+	}
+	systemContext := runner.systemContexts[len(runner.systemContexts)-1]
+	userMessage := runner.contextQueries[len(runner.contextQueries)-1]
 	for _, want := range []string{
 		"你是固定的 mock_interviewer Agent",
-		"本轮 submit_mode: formal_answer",
 		`"visible_message": "给用户看的中文回复"`,
 		`"user_intent": "answer|ask_hint|ask_explain|smalltalk|unclear|cancel"`,
 		`"state_action": "record_attempt|chat_only|stay_current|cancel"`,
@@ -120,12 +124,15 @@ func TestGoldenMockTurnTraceAndPromptIncludeSubmitDecisionFields(t *testing.T) {
 		"不要调用任何 tools",
 		"不要新增 Agent",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("mock turn prompt missing %q\nprompt:\n%s", want, prompt)
+		if !strings.Contains(systemContext, want) {
+			t.Fatalf("mock turn system context missing %q\ncontext:\n%s", want, systemContext)
 		}
 	}
-	if strings.Contains(prompt, "Do not write long-term memory") {
-		t.Fatalf("mock turn prompt should use Chinese memory boundary, got: %s", prompt)
+	if !strings.Contains(userMessage, "本轮 submit_mode: formal_answer") {
+		t.Fatalf("mock turn user message missing submit_mode: %s", userMessage)
+	}
+	if strings.Contains(systemContext, "Do not write long-term memory") || strings.Contains(userMessage, "Do not write long-term memory") {
+		t.Fatalf("mock turn context should use Chinese memory boundary, got context=%s\nmessage=%s", systemContext, userMessage)
 	}
 
 	trace := mustFindSingleTrace(t, s, AgentDecisionTraceQuery{
