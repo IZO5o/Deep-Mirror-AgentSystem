@@ -106,12 +106,16 @@ func (a *Agent) RunStreaming(ctx context.Context, query string, viewCh chan Mess
 }
 
 func (a *Agent) RunStreamingWithHistory(ctx context.Context, history []shared.OpenAIMessage, query string, viewCh chan MessageVO, confirmCh chan ConfirmationAction) (RunResult, error) {
+	return a.RunStreamingWithContextHistory(ctx, DefaultRunOptions(), history, query, viewCh, confirmCh)
+}
+
+func (a *Agent) RunStreamingWithContextHistory(ctx context.Context, options RunOptions, history []shared.OpenAIMessage, query string, viewCh chan MessageVO, confirmCh chan ConfirmationAction) (RunResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	a.contextEngine.Reset()
 	a.contextEngine.SetMessages(history)
-	return a.runStreaming(ctx, query, viewCh, confirmCh, false)
+	return a.runStreamingWithOptions(ctx, query, viewCh, confirmCh, options)
 }
 
 func (a *Agent) RunTask(ctx context.Context, query string) (RunResult, error) {
@@ -130,10 +134,22 @@ func (a *Agent) RunTask(ctx context.Context, query string) (RunResult, error) {
 			}
 		}
 	}()
-	return a.runStreaming(ctx, query, viewCh, confirmCh, true)
+	return a.runStreamingWithOptions(ctx, query, viewCh, confirmCh, RunOptions{
+		ApplyPolicies:     false,
+		UpdateAgentMemory: false,
+	})
 }
 
 func (a *Agent) runStreaming(ctx context.Context, query string, viewCh chan MessageVO, confirmCh chan ConfirmationAction, skipPoliciesAndMemory bool) (RunResult, error) {
+	options := DefaultRunOptions()
+	if skipPoliciesAndMemory {
+		options.ApplyPolicies = false
+		options.UpdateAgentMemory = false
+	}
+	return a.runStreamingWithOptions(ctx, query, viewCh, confirmCh, options)
+}
+
+func (a *Agent) runStreamingWithOptions(ctx context.Context, query string, viewCh chan MessageVO, confirmCh chan ConfirmationAction, options RunOptions) (RunResult, error) {
 	a.contextEngine.SetPolicyEventHook(func(policyName string, running bool, err error) {
 		viewCh <- MessageVO{
 			Type: MessageTypePolicy,
@@ -160,7 +176,7 @@ func (a *Agent) runStreaming(ctx context.Context, query string, viewCh chan Mess
 	defer a.contextEngine.AbortTurn(draft)
 
 	// 为本轮次创建新的消息链。草稿消息在 commit 前不会污染上下文。
-	messages := a.contextEngine.BuildRequestMessages()
+	messages := a.contextEngine.BuildRequestMessagesWithSystemContext(options.SystemContext)
 	messages = append(messages, draft.NewMessages...)
 	var usage openai.CompletionUsage
 	var finalResponse string
@@ -303,14 +319,20 @@ func (a *Agent) runStreaming(ctx context.Context, query string, viewCh chan Mess
 		select {
 		case <-ctx.Done():
 			// 用户按 ESC，保存消息但不执行 policies/memory
-			_ = a.contextEngine.CommitTurn(ctx, draft, ctxengine.Usage{PromptTokens: int(usage.TotalTokens)}, true)
+			_ = a.contextEngine.CommitTurnWithOptions(ctx, draft, ctxengine.Usage{PromptTokens: int(usage.TotalTokens)}, ctxengine.CommitOptions{
+				ApplyPolicies:     false,
+				UpdateAgentMemory: false,
+			})
 			return RunResult{Response: finalResponse, Rounds: draft.NewMessages, Usage: usage}, nil
 		default:
 		}
 
 	}
 
-	err := a.contextEngine.CommitTurn(ctx, draft, ctxengine.Usage{PromptTokens: int(usage.TotalTokens)}, skipPoliciesAndMemory)
+	err := a.contextEngine.CommitTurnWithOptions(ctx, draft, ctxengine.Usage{PromptTokens: int(usage.TotalTokens)}, ctxengine.CommitOptions{
+		ApplyPolicies:     options.ApplyPolicies,
+		UpdateAgentMemory: options.UpdateAgentMemory,
+	})
 	return RunResult{Response: finalResponse, Rounds: draft.NewMessages, Usage: usage}, err
 }
 

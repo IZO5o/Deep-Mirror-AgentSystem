@@ -319,20 +319,21 @@ type SubmitCoachingSessionTurnReq struct {
 
 // CoachingSessionVO 是 plan 级别二面辅导长会话
 type CoachingSessionVO struct {
-	SessionID        string `json:"session_id"`
-	UserID           string `json:"user_id"`
-	InterviewID      string `json:"interview_id"`
-	CoachingPlanID   string `json:"coaching_plan_id"`
-	CurrentTaskID    string `json:"current_task_id,omitempty"`
-	Status           string `json:"status"`
-	ProgressSummary  string `json:"progress_summary"`
-	LastAgentMessage string `json:"last_agent_message"`
-	ErrorMessage     string `json:"error_message,omitempty"`
-	StartedAt        int64  `json:"started_at,omitempty"`
-	LastActiveAt     int64  `json:"last_active_at,omitempty"`
-	CompletedAt      int64  `json:"completed_at,omitempty"`
-	CreatedAt        int64  `json:"created_at"`
-	UpdatedAt        int64  `json:"updated_at"`
+	SessionID            string `json:"session_id"`
+	UserID               string `json:"user_id"`
+	InterviewID          string `json:"interview_id"`
+	CoachingPlanID       string `json:"coaching_plan_id"`
+	CurrentTaskID        string `json:"current_task_id,omitempty"`
+	Status               string `json:"status"`
+	ProgressSummary      string `json:"progress_summary"`
+	LastAgentMessage     string `json:"last_agent_message"`
+	ErrorMessage         string `json:"error_message,omitempty"`
+	StartedAt            int64  `json:"started_at,omitempty"`
+	LastActiveAt         int64  `json:"last_active_at,omitempty"`
+	CompletedAt          int64  `json:"completed_at,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	UpdatedAt            int64  `json:"updated_at"`
+	AgentPersistentState any    `json:"agent_persistent_state,omitempty"`
 }
 
 // CoachingSessionTurnVO 是二面辅导会话中的一轮交互或状态记录
@@ -391,22 +392,23 @@ type SubmitMockTurnReq struct {
 
 // MockInterviewVO 是一次模拟面试会话
 type MockInterviewVO struct {
-	MockID         string `json:"mock_id"`
-	UserID         string `json:"user_id"`
-	InterviewID    string `json:"interview_id"`
-	PlanID         string `json:"plan_id,omitempty"`
-	TargetRound    string `json:"target_round"`
-	Status         string `json:"status"`
-	CurrentTurn    int    `json:"current_turn"`
-	CurrentTopic   string `json:"current_topic,omitempty"`
-	OverallGoal    string `json:"overall_goal"`
-	FirstQuestion  string `json:"first_question"`
-	LastFeedback   string `json:"last_feedback,omitempty"`
-	ErrorMessage   string `json:"error_message,omitempty"`
-	FinalSummary   string `json:"final_summary,omitempty"`
-	RawAgentOutput string `json:"raw_agent_output,omitempty"`
-	CreatedAt      int64  `json:"created_at"`
-	UpdatedAt      int64  `json:"updated_at"`
+	MockID               string `json:"mock_id"`
+	UserID               string `json:"user_id"`
+	InterviewID          string `json:"interview_id"`
+	PlanID               string `json:"plan_id,omitempty"`
+	TargetRound          string `json:"target_round"`
+	Status               string `json:"status"`
+	CurrentTurn          int    `json:"current_turn"`
+	CurrentTopic         string `json:"current_topic,omitempty"`
+	OverallGoal          string `json:"overall_goal"`
+	FirstQuestion        string `json:"first_question"`
+	LastFeedback         string `json:"last_feedback,omitempty"`
+	ErrorMessage         string `json:"error_message,omitempty"`
+	FinalSummary         string `json:"final_summary,omitempty"`
+	RawAgentOutput       string `json:"raw_agent_output,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	UpdatedAt            int64  `json:"updated_at"`
+	AgentPersistentState any    `json:"agent_persistent_state,omitempty"`
 }
 
 // MockTurnVO 是模拟面试的一轮问答和反馈

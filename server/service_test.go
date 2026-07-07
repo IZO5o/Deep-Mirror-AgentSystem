@@ -258,14 +258,19 @@ func newTestServerWithFakeAgents(t *testing.T) (*Server, map[agent.AgentType]*fa
 }
 
 type fakeRunner struct {
-	agentType     agent.AgentType
-	calls         int
-	taskCalls     int
-	queries       []string
-	taskQueries   []string
-	taskResponse  string
-	taskResponses []string
-	taskErr       error
+	agentType       agent.AgentType
+	calls           int
+	taskCalls       int
+	queries         []string
+	taskQueries     []string
+	contextQueries  []string
+	systemContexts  []string
+	histories       [][]shared.OpenAIMessage
+	runOptions      []agent.RunOptions
+	taskResponse    string
+	taskResponses   []string
+	streamResponses []string
+	taskErr         error
 }
 
 func (r *fakeRunner) Model() string {
@@ -290,7 +295,31 @@ func (r *fakeRunner) RunTask(_ context.Context, query string) (agent.RunResult, 
 }
 
 func (r *fakeRunner) RunStreamingWithHistory(_ context.Context, _ []shared.OpenAIMessage, query string, _ chan agent.MessageVO, _ chan agent.ConfirmationAction) (agent.RunResult, error) {
+	return r.RunStreamingWithContextHistory(context.Background(), agent.DefaultRunOptions(), nil, query, nil, nil)
+}
+
+func (r *fakeRunner) RunStreamingWithContextHistory(_ context.Context, options agent.RunOptions, history []shared.OpenAIMessage, query string, _ chan agent.MessageVO, _ chan agent.ConfirmationAction) (agent.RunResult, error) {
 	r.calls++
 	r.queries = append(r.queries, query)
+	r.contextQueries = append(r.contextQueries, query)
+	r.systemContexts = append(r.systemContexts, options.SystemContext)
+	r.histories = append(r.histories, history)
+	r.runOptions = append(r.runOptions, options)
+	if r.taskErr != nil {
+		return agent.RunResult{Response: r.taskResponse}, r.taskErr
+	}
+	if len(r.streamResponses) > 0 {
+		response := r.streamResponses[0]
+		r.streamResponses = r.streamResponses[1:]
+		return agent.RunResult{Response: response}, nil
+	}
+	if len(r.taskResponses) > 0 {
+		response := r.taskResponses[0]
+		r.taskResponses = r.taskResponses[1:]
+		return agent.RunResult{Response: response}, nil
+	}
+	if r.taskResponse != "" {
+		return agent.RunResult{Response: r.taskResponse}, nil
+	}
 	return agent.RunResult{Response: "fake response from " + string(r.agentType)}, nil
 }

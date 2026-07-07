@@ -153,6 +153,22 @@ func buildSelectedContextTraceSnapshot(selection MemorySelectionResult) string {
 	})
 }
 
+func buildBusinessContextTraceSnapshot(selection MemorySelectionResult, compression BusinessHistoryCompressionResult) string {
+	return marshalTraceJSON(map[string]any{
+		"debug_summary":            selection.DebugSummary,
+		"selected_memory_items":    toSelectedMemoryItemVOs(selection.MemoryItems),
+		"selected_practice_states": toSelectedPracticeStateVOs(selection.PracticeStates),
+		"history_compression": map[string]any{
+			"original_message_count":    compression.OriginalMessageCount,
+			"compressed_message_count":  compression.CompressedMessageCount,
+			"original_token_estimate":   compression.OriginalTokenEstimate,
+			"compressed_token_estimate": compression.CompressedTokenEstimate,
+			"summary_generated":         compression.SummaryGenerated,
+			"truncated":                 compression.Truncated,
+		},
+	})
+}
+
 func traceErrorMessage(err error) string {
 	if err == nil {
 		return ""

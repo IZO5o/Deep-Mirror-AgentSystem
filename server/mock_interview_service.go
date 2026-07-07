@@ -73,25 +73,26 @@ type mockStartOutput struct {
 }
 
 type mockTurnOutput struct {
-	InputType                 string               `json:"input_type"`
-	AgentMessage              string               `json:"agent_message"`
-	VisibleMessage            string               `json:"visible_message"`
-	UserIntent                string               `json:"user_intent"`
-	StateAction               string               `json:"state_action"`
-	Confidence                float64              `json:"confidence"`
-	NeedsClarification        bool                 `json:"needs_clarification"`
-	SubmitMode                string               `json:"submit_mode"`
-	Score                     int                  `json:"score"`
-	Feedback                  string               `json:"feedback"`
-	Topic                     string               `json:"topic"`
-	WeaknessTags              []string             `json:"weakness_tags"`
-	NextAction                string               `json:"next_action"`
-	ShouldUpdatePracticeState bool                 `json:"should_update_practice_state"`
-	PracticeUpdates           []mockPracticeUpdate `json:"practice_updates"`
-	ShouldCompleteMock        bool                 `json:"should_complete_mock"`
-	FollowUpReason            string               `json:"follow_up_reason"`
-	TopicTags                 []string             `json:"topic_tags"`
-	NextQuestion              string               `json:"next_question"`
+	InputType                 string                `json:"input_type"`
+	AgentMessage              string                `json:"agent_message"`
+	VisibleMessage            string                `json:"visible_message"`
+	UserIntent                string                `json:"user_intent"`
+	StateAction               string                `json:"state_action"`
+	Confidence                float64               `json:"confidence"`
+	NeedsClarification        bool                  `json:"needs_clarification"`
+	SubmitMode                string                `json:"submit_mode"`
+	Score                     int                   `json:"score"`
+	Feedback                  string                `json:"feedback"`
+	Topic                     string                `json:"topic"`
+	WeaknessTags              []string              `json:"weakness_tags"`
+	NextAction                string                `json:"next_action"`
+	ShouldUpdatePracticeState bool                  `json:"should_update_practice_state"`
+	PracticeUpdates           []mockPracticeUpdate  `json:"practice_updates"`
+	ShouldCompleteMock        bool                  `json:"should_complete_mock"`
+	FollowUpReason            string                `json:"follow_up_reason"`
+	TopicTags                 []string              `json:"topic_tags"`
+	NextQuestion              string                `json:"next_question"`
+	PersistentStateUpdate     PersistentStateUpdate `json:"persistent_state_update"`
 }
 
 type mockCompleteOutput struct {
@@ -332,26 +333,58 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		return vo.MockTurnVO{}, err
 	}
 
-	prompt := buildMockTurnPrompt(input, mock, turns, currentQuestion, req.Answer, submitMode)
+	staticContext := buildMockTurnInstructionContext() + "\n\n" + buildMockTurnStaticContext(input, mock, currentQuestion)
+	historyMessages := projectMockTurnsToMessages(turns)
+	compression := compressBusinessHistoryForPrompt(historyMessages, BusinessHistoryCompressionConfig{})
+	userMessage := buildMockTurnUserMessage(req.Answer, submitMode, currentQuestion)
 	inputSnapshot := marshalTraceJSON(map[string]any{
-		"mock_id":                 mock.MockID,
-		"interview_id":            mock.InterviewID,
-		"user_id":                 mock.UserID,
-		"plan_id":                 mock.PlanID,
-		"target_round":            mock.TargetRound,
-		"mock_status":             mock.Status,
-		"current_turn":            mock.CurrentTurn,
-		"current_topic":           mock.CurrentTopic,
-		"submit_mode":             submitMode,
-		"existing_turn_count":     len(turns),
-		"current_question_length": len(currentQuestion),
-		"answer_length":           len(req.Answer),
-		"question_count":          len(input.questions),
-		"prompt_length":           len(prompt),
+		"mock_id":                   mock.MockID,
+		"interview_id":              mock.InterviewID,
+		"user_id":                   mock.UserID,
+		"plan_id":                   mock.PlanID,
+		"target_round":              mock.TargetRound,
+		"mock_status":               mock.Status,
+		"current_turn":              mock.CurrentTurn,
+		"current_topic":             mock.CurrentTopic,
+		"submit_mode":               submitMode,
+		"history_turn_count":        len(turns),
+		"history_message_count":     len(historyMessages),
+		"compressed_message_count":  compression.CompressedMessageCount,
+		"history_summary_generated": compression.SummaryGenerated,
+		"history_truncated":         compression.Truncated,
+		"current_question_length":   len(currentQuestion),
+		"answer_length":             len(req.Answer),
+		"question_count":            len(input.questions),
+		"static_context_length":     len(staticContext),
+		"user_message_length":       len(userMessage),
 	})
-	selectedContextSnapshot := buildSelectedContextTraceSnapshot(input.selection)
+	selectedContextSnapshot := buildBusinessContextTraceSnapshot(input.selection, compression)
 
-	result, err := runner.RunTask(ctx, prompt)
+	viewCh := make(chan agent.MessageVO, 64)
+	confirmCh := make(chan agent.ConfirmationAction, 1)
+	drained := make(chan struct{})
+	defer func() {
+		close(viewCh)
+		<-drained
+		close(confirmCh)
+	}()
+	go func() {
+		defer close(drained)
+		for event := range viewCh {
+			if event.Type == agent.MessageTypeToolConfirm {
+				select {
+				case confirmCh <- agent.ConfirmReject:
+				default:
+				}
+			}
+		}
+	}()
+
+	result, err := runner.RunStreamingWithContextHistory(ctx, agent.RunOptions{
+		SystemContext:     staticContext,
+		ApplyPolicies:     true,
+		UpdateAgentMemory: false,
+	}, compression.Messages, userMessage, viewCh, confirmCh)
 	if err != nil {
 		log.Warnf("mock interviewer turn failed for mock %s: %v", mockID, err)
 		_ = s.failMockTurn(mock, len(turns), currentQuestion, req.Answer, fallbackRaw(result.Response, err), err.Error())
@@ -522,6 +555,9 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 					return err
 				}
 			}
+			if err := mergeMockPersistentStateUpdateTx(tx, mockID, updates, parsed.PersistentStateUpdate, now); err != nil {
+				return err
+			}
 			return tx.Model(&MockInterview{}).
 				Where("mock_id = ?", mockID).
 				Updates(updates).Error
@@ -572,6 +608,9 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 				return err
 			}
 		}
+		if err := mergeMockPersistentStateUpdateTx(tx, mockID, updates, parsed.PersistentStateUpdate, now); err != nil {
+			return err
+		}
 		return tx.Model(&MockInterview{}).
 			Where("mock_id = ?", mockID).
 			Updates(updates).Error
@@ -609,6 +648,26 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		Status:                  AgentDecisionTraceStatusSucceeded,
 	})
 	return toMockTurnVO(responseTurn), nil
+}
+
+func mergeMockPersistentStateUpdateTx(tx *gorm.DB, mockID string, updates map[string]any, update PersistentStateUpdate, now int64) error {
+	normalizedPersistentStateUpdate := normalizePersistentStateUpdate(update)
+	if len(normalizedPersistentStateUpdate.Fields) == 0 {
+		return nil
+	}
+
+	var currentMock MockInterview
+	if err := tx.Select("agent_persistent_state").
+		Where("mock_id = ?", mockID).
+		First(&currentMock).Error; err != nil {
+		return err
+	}
+	nextPersistentState, err := applyPersistentStateUpdate(persistentStateValue(currentMock.AgentPersistentState), normalizedPersistentStateUpdate, now)
+	if err != nil {
+		return err
+	}
+	updates["agent_persistent_state"] = persistentStatePtr(nextPersistentState)
+	return nil
 }
 
 func buildMockActionTurn(mock MockInterview, turnIndex int, parsed mockTurnOutput, currentQuestion string, raw string, now int64) MockTurn {
@@ -694,6 +753,9 @@ func mockTurnTraceActions(parsed mockTurnOutput, createdTurnCount int) []string 
 	}
 	if parsed.ShouldCompleteMock || parsed.NextAction == mockNextActionComplete {
 		actions = append(actions, "updated mock status completed")
+	}
+	if len(normalizePersistentStateUpdate(parsed.PersistentStateUpdate).Fields) > 0 {
+		actions = append(actions, "merged mock agent_persistent_state")
 	}
 	return actions
 }
@@ -1594,22 +1656,23 @@ func fallbackRaw(raw string, err error) string {
 
 func toMockInterviewVO(mock MockInterview) vo.MockInterviewVO {
 	return vo.MockInterviewVO{
-		MockID:         mock.MockID,
-		UserID:         mock.UserID,
-		InterviewID:    mock.InterviewID,
-		PlanID:         mock.PlanID,
-		TargetRound:    mock.TargetRound,
-		Status:         mock.Status,
-		CurrentTurn:    mock.CurrentTurn,
-		CurrentTopic:   mock.CurrentTopic,
-		OverallGoal:    mock.OverallGoal,
-		FirstQuestion:  mock.FirstQuestion,
-		LastFeedback:   mock.LastFeedback,
-		ErrorMessage:   mock.ErrorMessage,
-		FinalSummary:   mock.FinalSummary,
-		RawAgentOutput: mock.RawAgentOutput,
-		CreatedAt:      mock.CreatedAt,
-		UpdatedAt:      mock.UpdatedAt,
+		MockID:               mock.MockID,
+		UserID:               mock.UserID,
+		InterviewID:          mock.InterviewID,
+		PlanID:               mock.PlanID,
+		TargetRound:          mock.TargetRound,
+		Status:               mock.Status,
+		CurrentTurn:          mock.CurrentTurn,
+		CurrentTopic:         mock.CurrentTopic,
+		OverallGoal:          mock.OverallGoal,
+		FirstQuestion:        mock.FirstQuestion,
+		LastFeedback:         mock.LastFeedback,
+		ErrorMessage:         mock.ErrorMessage,
+		FinalSummary:         mock.FinalSummary,
+		RawAgentOutput:       mock.RawAgentOutput,
+		AgentPersistentState: decodePersistentStateForVO(mock.AgentPersistentState),
+		CreatedAt:            mock.CreatedAt,
+		UpdatedAt:            mock.UpdatedAt,
 	}
 }
 
