@@ -238,6 +238,7 @@ type CoachingSession struct {
 	ProgressSummary      string
 	LastAgentMessage     string
 	ErrorMessage         string
+	FailedRetryCount     int
 	AgentPersistentState *string `gorm:"type:json"`
 	StartedAt            int64
 	LastActiveAt         int64
@@ -290,6 +291,7 @@ type MockInterview struct {
 	FirstQuestion        string
 	LastFeedback         string
 	ErrorMessage         string
+	FailedRetryCount     int
 	FinalSummary         string
 	AgentPersistentState *string `gorm:"type:json"`
 	RawAgentOutput       string

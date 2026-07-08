@@ -178,11 +178,7 @@ func addMockTurnActionChecks(add func(string, bool, string), trace vo.AgentDecis
 }
 
 func addMemoryBoundaryCheck(add func(string, bool, string), trace vo.AgentDecisionTraceVO) {
-	actions := strings.ToLower(trace.ServiceActions)
-	violated := strings.Contains(actions, "created memory_items") ||
-		strings.Contains(actions, "updated memory_items") ||
-		strings.Contains(actions, "upserted memory_items")
-	add("memory_items_write_boundary", !violated, "service_actions must not directly create/update memory_items")
+	add("memory_items_write_boundary", !containsMemoryItemsWriteAction(trace.ServiceActions), "service_actions must not directly create/update memory_items")
 }
 
 func addFailedTraceActionCheck(add func(string, bool, string), trace vo.AgentDecisionTraceVO) {

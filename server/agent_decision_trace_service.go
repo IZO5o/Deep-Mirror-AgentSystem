@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"agent-web-base/shared/log"
 	"agent-web-base/vo"
@@ -66,6 +67,36 @@ func (s *Server) recordAgentDecisionTrace(input AgentDecisionTraceInput) {
 	}
 }
 
+func (s *Server) recordAgentDecisionTraceTx(tx *gorm.DB, input AgentDecisionTraceInput) error {
+	status := strings.TrimSpace(input.Status)
+	if status == "" {
+		status = AgentDecisionTraceStatusSucceeded
+	}
+	trace := AgentDecisionTrace{
+		TraceID:                 uuid.New().String(),
+		UserID:                  input.UserID,
+		InterviewID:             input.InterviewID,
+		AgentType:               input.AgentType,
+		SourceType:              input.SourceType,
+		SourceID:                input.SourceID,
+		StepName:                input.StepName,
+		SelectedContextSnapshot: trimTraceString(input.SelectedContextSnapshot),
+		InputSnapshot:           trimTraceString(input.InputSnapshot),
+		RawAgentOutput:          trimTraceString(input.RawAgentOutput),
+		ParsedDecision:          trimTraceString(input.ParsedDecision),
+		ServiceActions:          trimTraceString(input.ServiceActions),
+		Status:                  status,
+		ErrorMessage:            trimTraceString(input.ErrorMessage),
+		CreatedAt:               time.Now().Unix(),
+	}
+	if s.traceBeforeCreateHook != nil {
+		if err := s.traceBeforeCreateHook(&trace); err != nil {
+			return err
+		}
+	}
+	return tx.Create(&trace).Error
+}
+
 func (s *Server) saveAgentDecisionTrace(input AgentDecisionTraceInput) error {
 	status := strings.TrimSpace(input.Status)
 	if status == "" {
@@ -88,6 +119,11 @@ func (s *Server) saveAgentDecisionTrace(input AgentDecisionTraceInput) error {
 		Status:                  status,
 		ErrorMessage:            trimTraceString(input.ErrorMessage),
 		CreatedAt:               now,
+	}
+	if s.traceBeforeCreateHook != nil {
+		if err := s.traceBeforeCreateHook(&trace); err != nil {
+			return err
+		}
 	}
 	return s.db.Create(&trace).Error
 }

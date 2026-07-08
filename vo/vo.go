@@ -377,6 +377,7 @@ type CoachingSessionVO struct {
 	ProgressSummary      string `json:"progress_summary"`
 	LastAgentMessage     string `json:"last_agent_message"`
 	ErrorMessage         string `json:"error_message,omitempty"`
+	FailedRetryCount     int    `json:"failed_retry_count,omitempty"`
 	StartedAt            int64  `json:"started_at,omitempty"`
 	LastActiveAt         int64  `json:"last_active_at,omitempty"`
 	CompletedAt          int64  `json:"completed_at,omitempty"`
@@ -461,6 +462,7 @@ type MockInterviewVO struct {
 	FirstQuestion        string `json:"first_question"`
 	LastFeedback         string `json:"last_feedback,omitempty"`
 	ErrorMessage         string `json:"error_message,omitempty"`
+	FailedRetryCount     int    `json:"failed_retry_count,omitempty"`
 	FinalSummary         string `json:"final_summary,omitempty"`
 	RawAgentOutput       string `json:"raw_agent_output,omitempty"`
 	CreatedAt            int64  `json:"created_at"`

@@ -174,6 +174,26 @@ func TestAgentEvaluationDetectsMemoryItemsBoundaryViolation(t *testing.T) {
 	assertEvaluationCheck(t, result, "memory_items_write_boundary", false)
 }
 
+func TestAgentEvaluationFlagsMemoryItemsWriteWarning(t *testing.T) {
+	s := newTestServer(t)
+	mustSaveEvaluationTrace(t, s, AgentDecisionTraceInput{
+		UserID:         "user_001",
+		InterviewID:    "interview_001",
+		AgentType:      string(agent.AgentTypeSecondRoundCoach),
+		SourceType:     AgentTraceSourceCoachingSession,
+		SourceID:       "memory_items_warning",
+		StepName:       AgentTraceStepCoachingSessionTurn,
+		InputSnapshot:  `{"session_id":"memory_items_warning"}`,
+		RawAgentOutput: `{"input_type":"hint_request"}`,
+		ParsedDecision: `{"input_type":"hint_request"}`,
+		ServiceActions: `["recorded coaching_session user turn",{"write":"memory_items"}]`,
+		Status:         AgentDecisionTraceStatusSucceeded,
+	})
+
+	result := mustEvaluateSingleTrace(t, s, AgentDecisionTraceQuery{SourceID: "memory_items_warning"})
+	assertEvaluationCheck(t, result, "memory_items_write_boundary", false)
+}
+
 func TestAgentEvaluationControllerFilters(t *testing.T) {
 	s := newTestServer(t)
 	router := NewRouter(s)

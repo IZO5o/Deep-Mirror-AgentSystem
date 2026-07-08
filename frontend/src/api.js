@@ -115,6 +115,9 @@ export const api = {
   cancelCoachingSession(sessionId) {
     return apiRequest(`/api/coaching-sessions/${sessionId}/cancel`, { method: 'POST' })
   },
+  resumeCoachingSession(sessionId) {
+    return apiRequest(`/api/coaching-sessions/${sessionId}/resume`, { method: 'POST' })
+  },
   startMockInterview(interviewId, body) {
     return apiRequest(`/api/interviews/${interviewId}/mock-interviews`, { method: 'POST', body })
   },
@@ -132,6 +135,9 @@ export const api = {
   },
   cancelMockInterview(mockId) {
     return apiRequest(`/api/mock-interviews/${mockId}/cancel`, { method: 'POST' })
+  },
+  resumeMockInterview(mockId) {
+    return apiRequest(`/api/mock-interviews/${mockId}/resume`, { method: 'POST' })
   },
   listPracticeStates(filters) {
     return apiRequest(`/api/practice-states${buildQuery(filters)}`)

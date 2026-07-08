@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -151,5 +152,32 @@ func TestCoachingSessionControllerFlow(t *testing.T) {
 	decodeOKData(t, cancelRec, &cancelled)
 	if cancelled.Session.Status != CoachingSessionStatusCancelled {
 		t.Fatalf("cancelled status = %q, want cancelled", cancelled.Session.Status)
+	}
+}
+
+func TestResumeFailedCoachingSessionControllerRoute(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	router := NewRouter(s)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	runner := runners[agent.AgentTypeSecondRoundCoach]
+	runner.taskErr = errors.New("model unavailable")
+	runner.taskResponse = "partial coaching output"
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "我会从缓存一致性和失败补偿回答。",
+		SubmitMode: CoachingSubmitModeFormalAnswer,
+	}); err == nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want model error")
+	}
+
+	runner.taskErr = nil
+	runner.taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 88, "恢复后回答达标。", CoachingNextActionPromptNext, false)
+	resumeRec := performJSONRequest(router, http.MethodPost, "/api/coaching-sessions/"+session.Session.SessionID+"/resume", "")
+	if resumeRec.Code != http.StatusOK {
+		t.Fatalf("resume status = %d, want %d; body=%s", resumeRec.Code, http.StatusOK, resumeRec.Body.String())
+	}
+	var resumed vo.CoachingSessionDetailVO
+	decodeOKData(t, resumeRec, &resumed)
+	if resumed.Session.FailedRetryCount != 1 || resumed.Session.Status != CoachingSessionStatusWaitingUserAnswer {
+		t.Fatalf("resumed session = %#v, want retry count 1 and waiting", resumed.Session)
 	}
 }

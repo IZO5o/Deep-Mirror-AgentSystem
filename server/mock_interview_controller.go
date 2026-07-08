@@ -85,6 +85,19 @@ func (s *Server) completeMockInterview(c *gin.Context) {
 	c.JSON(http.StatusOK, vo.OK(result))
 }
 
+// POST /mock-interviews/:mock_id/resume
+func (s *Server) resumeFailedMockInterview(c *gin.Context) {
+	mockID := c.Param("mock_id")
+
+	result, err := s.ResumeFailedMockInterview(c.Request.Context(), mockID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, vo.Err(500, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, vo.OK(result))
+}
+
 // POST /mock-interviews/:mock_id/cancel
 func (s *Server) cancelMockInterview(c *gin.Context) {
 	mockID := c.Param("mock_id")

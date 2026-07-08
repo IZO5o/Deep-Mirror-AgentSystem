@@ -125,6 +125,19 @@ func (s *Server) cancelCoachingSession(c *gin.Context) {
 	c.JSON(http.StatusOK, vo.OK(result))
 }
 
+// POST /coaching-sessions/:session_id/resume
+func (s *Server) resumeFailedCoachingSession(c *gin.Context) {
+	sessionID := c.Param("session_id")
+
+	result, err := s.ResumeFailedCoachingSession(c.Request.Context(), sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, vo.Err(500, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, vo.OK(result))
+}
+
 // PATCH /coaching-tasks/:task_id
 func (s *Server) updateCoachingTask(c *gin.Context) {
 	taskID := c.Param("task_id")

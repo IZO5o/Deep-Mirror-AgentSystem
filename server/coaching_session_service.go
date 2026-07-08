@@ -25,7 +25,9 @@ const (
 	CoachingSessionStatusPaused            = "paused"
 	CoachingSessionStatusCompleted         = "completed"
 	CoachingSessionStatusFailed            = "failed"
+	CoachingSessionStatusRetriableFailed   = "retriable_failed"
 	CoachingSessionStatusCancelled         = "cancelled"
+	maxFailedSessionRetries                = 3
 
 	CoachingTurnRoleUser      = "user"
 	CoachingTurnRoleAssistant = "assistant"
@@ -90,6 +92,7 @@ type coachingSessionAgentOutput struct {
 	ShouldUpdatePracticeState bool                  `json:"should_update_practice_state"`
 	ShouldCompleteCurrentTask bool                  `json:"should_complete_current_task"`
 	ShouldPause               bool                  `json:"should_pause"`
+	DefenseRules              []DefenseRuleDecision `json:"defense_rules,omitempty"`
 	PersistentStateUpdate     PersistentStateUpdate `json:"persistent_state_update"`
 }
 
@@ -238,12 +241,21 @@ func (s *Server) GetCoachingSession(sessionID string) (vo.CoachingSessionDetailV
 }
 
 func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string, req vo.SubmitCoachingSessionTurnReq) (vo.CoachingSessionDetailVO, error) {
+	return s.submitCoachingSessionTurnInternal(ctx, sessionID, req, nil)
+}
+
+func (s *Server) submitCoachingSessionTurnInternal(ctx context.Context, sessionID string, req vo.SubmitCoachingSessionTurnReq, existingUserTurn *CoachingSessionTurn) (vo.CoachingSessionDetailVO, error) {
 	if s.agents == nil {
 		return vo.CoachingSessionDetailVO{}, fmt.Errorf("agent provider is nil")
 	}
-	userInput := strings.TrimSpace(req.UserInput)
-	if userInput == "" {
-		return vo.CoachingSessionDetailVO{}, fmt.Errorf("user_input is required")
+	var userInput string
+	if existingUserTurn != nil {
+		userInput = existingUserTurn.Content
+	} else {
+		userInput = strings.TrimSpace(req.UserInput)
+		if userInput == "" {
+			return vo.CoachingSessionDetailVO{}, fmt.Errorf("user_input is required")
+		}
 	}
 	submitMode := normalizeCoachingSubmitMode(req.SubmitMode)
 
@@ -251,8 +263,18 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 	if err := s.db.First(&session, "session_id = ?", sessionID).Error; err != nil {
 		return vo.CoachingSessionDetailVO{}, err
 	}
-	if err := validateCoachingSessionCanSubmit(session); err != nil {
-		return vo.CoachingSessionDetailVO{}, err
+	if existingUserTurn == nil {
+		if err := validateCoachingSessionCanSubmit(session); err != nil {
+			return vo.CoachingSessionDetailVO{}, err
+		}
+		orphan, err := s.findLatestOrphanCoachingUserTurn(sessionID)
+		if err != nil {
+			return vo.CoachingSessionDetailVO{}, err
+		}
+		if orphan != nil {
+			existingUserTurn = orphan
+			userInput = orphan.Content
+		}
 	}
 
 	currentTask, err := s.ensureCoachingSessionCurrentTask(&session)
@@ -264,15 +286,20 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 	}
 
 	now := time.Now().Unix()
-	userTurn := CoachingSessionTurn{
-		TurnID:         uuid.New().String(),
-		SessionID:      session.SessionID,
-		CoachingPlanID: session.CoachingPlanID,
-		CoachingTaskID: currentTask.TaskID,
-		Role:           CoachingTurnRoleUser,
-		TurnType:       CoachingTurnTypeUserAnswer,
-		Content:        userInput,
-		CreatedAt:      now,
+	var userTurn CoachingSessionTurn
+	if existingUserTurn != nil {
+		userTurn = *existingUserTurn
+	} else {
+		userTurn = CoachingSessionTurn{
+			TurnID:         uuid.New().String(),
+			SessionID:      session.SessionID,
+			CoachingPlanID: session.CoachingPlanID,
+			CoachingTaskID: currentTask.TaskID,
+			Role:           CoachingTurnRoleUser,
+			TurnType:       CoachingTurnTypeUserAnswer,
+			Content:        userInput,
+			CreatedAt:      now,
+		}
 	}
 
 	var plan CoachingPlan
@@ -354,7 +381,7 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 		UpdateAgentMemory: false,
 	}, compression.Messages, userMessage, viewCh, confirmCh)
 	if runErr != nil {
-		if saveErr := s.failCoachingSessionAfterAgentError(session, currentTask, userTurn, result.Response, runErr); saveErr != nil {
+		if saveErr := s.failCoachingSessionAfterAgentError(session, currentTask, userTurn, result.Response, runErr, existingUserTurn != nil); saveErr != nil {
 			return vo.CoachingSessionDetailVO{}, fmt.Errorf("coaching session agent failed: %v; save failure: %w", runErr, saveErr)
 		}
 		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
@@ -376,7 +403,7 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 
 	parsed, parseErr := parseCoachingSessionAgentOutput(result.Response, submitMode)
 	if parseErr != nil {
-		if saveErr := s.failCoachingSessionAfterAgentError(session, currentTask, userTurn, result.Response, parseErr); saveErr != nil {
+		if saveErr := s.failCoachingSessionAfterAgentError(session, currentTask, userTurn, result.Response, parseErr, existingUserTurn != nil); saveErr != nil {
 			return vo.CoachingSessionDetailVO{}, fmt.Errorf("parse coaching session output failed: %v; save failure: %w", parseErr, saveErr)
 		}
 		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
@@ -395,7 +422,21 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 		})
 		return vo.CoachingSessionDetailVO{}, parseErr
 	}
-	if err := s.applyCoachingSessionAgentOutput(session, currentTask, userTurn, result.Response, parsed); err != nil {
+	successTraceInput := AgentDecisionTraceInput{
+		UserID:                  session.UserID,
+		InterviewID:             session.InterviewID,
+		AgentType:               string(agent.AgentTypeSecondRoundCoach),
+		SourceType:              AgentTraceSourceCoachingSession,
+		SourceID:                session.SessionID,
+		StepName:                AgentTraceStepCoachingSessionTurn,
+		SelectedContextSnapshot: selectedContextSnapshot,
+		InputSnapshot:           inputSnapshot,
+		RawAgentOutput:          result.Response,
+		ParsedDecision:          marshalTraceJSON(parsed),
+		ServiceActions:          marshalTraceJSON(coachingSessionTraceActions(parsed, existingUserTurn != nil)),
+		Status:                  AgentDecisionTraceStatusSucceeded,
+	}
+	if err := s.applyCoachingSessionAgentOutput(session, currentTask, userTurn, result.Response, parsed, successTraceInput, existingUserTurn != nil); err != nil {
 		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
 			UserID:                  session.UserID,
 			InterviewID:             session.InterviewID,
@@ -413,21 +454,39 @@ func (s *Server) SubmitCoachingSessionTurn(ctx context.Context, sessionID string
 		})
 		return vo.CoachingSessionDetailVO{}, err
 	}
-	s.recordAgentDecisionTrace(AgentDecisionTraceInput{
-		UserID:                  session.UserID,
-		InterviewID:             session.InterviewID,
-		AgentType:               string(agent.AgentTypeSecondRoundCoach),
-		SourceType:              AgentTraceSourceCoachingSession,
-		SourceID:                session.SessionID,
-		StepName:                AgentTraceStepCoachingSessionTurn,
-		SelectedContextSnapshot: selectedContextSnapshot,
-		InputSnapshot:           inputSnapshot,
-		RawAgentOutput:          result.Response,
-		ParsedDecision:          marshalTraceJSON(parsed),
-		ServiceActions:          marshalTraceJSON(coachingSessionTraceActions(parsed)),
-		Status:                  AgentDecisionTraceStatusSucceeded,
-	})
 	return s.GetCoachingSession(session.SessionID)
+}
+
+func (s *Server) ResumeFailedCoachingSession(ctx context.Context, sessionID string) (vo.CoachingSessionDetailVO, error) {
+	var session CoachingSession
+	if err := s.db.First(&session, "session_id = ?", sessionID).Error; err != nil {
+		return vo.CoachingSessionDetailVO{}, err
+	}
+	if session.Status != CoachingSessionStatusFailed {
+		return vo.CoachingSessionDetailVO{}, fmt.Errorf("session status must be 'failed' to resume, got %q", session.Status)
+	}
+	if session.FailedRetryCount >= maxFailedSessionRetries {
+		return vo.CoachingSessionDetailVO{}, fmt.Errorf("retry limit reached (%d)", maxFailedSessionRetries)
+	}
+	userTurn, err := s.latestFailedCoachingUserTurn(session.SessionID)
+	if err != nil {
+		return vo.CoachingSessionDetailVO{}, err
+	}
+	now := time.Now().Unix()
+	if err := s.db.Model(&CoachingSession{}).
+		Where("session_id = ?", session.SessionID).
+		Updates(map[string]any{
+			"status":             CoachingSessionStatusRetriableFailed,
+			"failed_retry_count": session.FailedRetryCount + 1,
+			"last_active_at":     now,
+			"updated_at":         now,
+		}).Error; err != nil {
+		return vo.CoachingSessionDetailVO{}, err
+	}
+	return s.submitCoachingSessionTurnInternal(ctx, sessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  userTurn.Content,
+		SubmitMode: CoachingSubmitModeFormalAnswer,
+	}, &userTurn)
 }
 
 func (s *Server) PauseCoachingSession(sessionID string) (vo.CoachingSessionDetailVO, error) {
@@ -557,7 +616,7 @@ func (s *Server) ensureCoachingSessionCurrentTask(session *CoachingSession) (Coa
 	return task, nil
 }
 
-func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task CoachingTask, userTurn CoachingSessionTurn, rawOutput string, parsed coachingSessionAgentOutput) error {
+func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task CoachingTask, userTurn CoachingSessionTurn, rawOutput string, parsed coachingSessionAgentOutput, traceInput AgentDecisionTraceInput, skipUserTurnCreate ...bool) error {
 	now := time.Now().Unix()
 	inputType := parsed.InputType
 	if strings.TrimSpace(inputType) == "" {
@@ -580,8 +639,14 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&userTurn).Error; err != nil {
-			return err
+		if len(skipUserTurnCreate) == 0 || !skipUserTurnCreate[0] {
+			if err := tx.Create(&userTurn).Error; err != nil {
+				return err
+			}
+		}
+		assistantTurnCreatedAt := now
+		if assistantTurnCreatedAt <= userTurn.CreatedAt {
+			assistantTurnCreatedAt = userTurn.CreatedAt + 1
 		}
 
 		assistantTurn := CoachingSessionTurn{
@@ -596,7 +661,7 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 			Score:          parsed.Score,
 			Feedback:       parsed.Feedback,
 			RawAgentOutput: rawOutput,
-			CreatedAt:      now,
+			CreatedAt:      assistantTurnCreatedAt,
 		}
 		if err := tx.Create(&assistantTurn).Error; err != nil {
 			return err
@@ -738,13 +803,47 @@ func (s *Server) applyCoachingSessionAgentOutput(session CoachingSession, task C
 		if strings.TrimSpace(nextPersistentState) != strings.TrimSpace(persistentStateValue(session.AgentPersistentState)) {
 			updates["agent_persistent_state"] = persistentStatePtr(nextPersistentState)
 		}
-		return tx.Model(&CoachingSession{}).
+		if err := tx.Model(&CoachingSession{}).
 			Where("session_id = ?", session.SessionID).
-			Updates(updates).Error
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		return s.recordAgentDecisionTraceTx(tx, traceInput)
 	})
 }
 
-func (s *Server) failCoachingSessionAfterAgentError(session CoachingSession, task CoachingTask, userTurn CoachingSessionTurn, rawOutput string, cause error) error {
+func (s *Server) latestFailedCoachingUserTurn(sessionID string) (CoachingSessionTurn, error) {
+	var turn CoachingSessionTurn
+	err := s.db.Where("session_id = ? AND role = ?", sessionID, CoachingTurnRoleUser).
+		Order("created_at desc").
+		First(&turn).Error
+	return turn, err
+}
+
+func (s *Server) findLatestOrphanCoachingUserTurn(sessionID string) (*CoachingSessionTurn, error) {
+	var turn CoachingSessionTurn
+	err := s.db.Where("session_id = ? AND role = ?", sessionID, CoachingTurnRoleUser).
+		Order("created_at desc").
+		First(&turn).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var laterCount int64
+	if err := s.db.Model(&CoachingSessionTurn{}).
+		Where("session_id = ? AND created_at > ? AND role IN ?", sessionID, turn.CreatedAt, []string{CoachingTurnRoleAssistant, CoachingTurnRoleSystem}).
+		Count(&laterCount).Error; err != nil {
+		return nil, err
+	}
+	if laterCount > 0 {
+		return nil, nil
+	}
+	return &turn, nil
+}
+
+func (s *Server) failCoachingSessionAfterAgentError(session CoachingSession, task CoachingTask, userTurn CoachingSessionTurn, rawOutput string, cause error, skipUserTurnCreate ...bool) error {
 	now := time.Now().Unix()
 	errorMessage := ""
 	if cause != nil {
@@ -752,8 +851,14 @@ func (s *Server) failCoachingSessionAfterAgentError(session CoachingSession, tas
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		userTurn.TurnType = CoachingTurnTypeUserAnswer
-		if err := tx.Create(&userTurn).Error; err != nil {
-			return err
+		if len(skipUserTurnCreate) == 0 || !skipUserTurnCreate[0] {
+			if err := tx.Create(&userTurn).Error; err != nil {
+				return err
+			}
+		}
+		errorTurnCreatedAt := now
+		if errorTurnCreatedAt <= userTurn.CreatedAt {
+			errorTurnCreatedAt = userTurn.CreatedAt + 1
 		}
 		if err := tx.Create(&CoachingSessionTurn{
 			TurnID:         uuid.New().String(),
@@ -765,7 +870,7 @@ func (s *Server) failCoachingSessionAfterAgentError(session CoachingSession, tas
 			Content:        errorMessage,
 			RawAgentOutput: rawOutput,
 			ErrorMessage:   errorMessage,
-			CreatedAt:      now,
+			CreatedAt:      errorTurnCreatedAt,
 		}).Error; err != nil {
 			return err
 		}
@@ -974,7 +1079,24 @@ func coerceCoachingSessionAgentOutput(parsed coachingSessionAgentOutput, rawFiel
 			if parsed.InputType == CoachingInputTypeFormalAnswer {
 				parsed.InputType = CoachingTurnTypeUserAnswer
 			}
+			parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+				RuleID:  DefenseRuleChatSubmitModeForcesChatOnly,
+				Applied: true,
+				Reason:  "submit_mode=chat forced state_action to chat_only",
+			})
 		}
+		if parsed.Score < 0 || parsed.Score > 100 {
+			parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+				RuleID:  DefenseRuleRecordAttemptScoreRange,
+				Applied: true,
+				Reason:  fmt.Sprintf("score %d is outside valid range 0-100", parsed.Score),
+			})
+		}
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleMemoryItemsWriteWarning,
+			Applied: false,
+			Reason:  "memory_items write boundary check is a passive warning; enforcement occurs at service_actions level",
+		})
 		if !isFormalCoachingAttempt(parsed) {
 			parsed = clearCoachingFormalScoringMetadata(parsed)
 		}
@@ -990,14 +1112,29 @@ func coerceCoachingSessionAgentOutput(parsed coachingSessionAgentOutput, rawFiel
 	downgradedToChatOnly := shouldDowngradeCoachingActionToChatOnly(submitMode, parsed.StateAction)
 	if downgradedToChatOnly {
 		parsed = downgradeCoachingActionToChatOnly(parsed)
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleChatSubmitModeForcesChatOnly,
+			Applied: true,
+			Reason:  "submit_mode=chat forced state_action to chat_only",
+		})
 	}
 	if parsed.StateAction == CoachingStateActionRecordAttempt && !isFormalCoachingAttempt(parsed) {
 		parsed = downgradeCoachingActionToChatOnly(parsed)
 		downgradedToChatOnly = true
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleChatSubmitModeForcesChatOnly,
+			Applied: true,
+			Reason:  "record_attempt rejected for non-formal attempt, forced chat_only",
+		})
 	}
 	if parsed.UserIntent == CoachingUserIntentSmalltalk || parsed.UserIntent == CoachingUserIntentUnclear {
 		parsed = downgradeCoachingActionToChatOnly(parsed)
 		downgradedToChatOnly = true
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleSmalltalkUnclearChatOnly,
+			Applied: true,
+			Reason:  fmt.Sprintf("user_intent=%s forced state_action to chat_only", parsed.UserIntent),
+		})
 	}
 	parsed.InputType = coachingInputTypeForIntent(parsed.UserIntent, legacyInputType)
 	if downgradedToChatOnly || (parsed.StateAction == CoachingStateActionChatOnly && parsed.InputType == CoachingInputTypeFormalAnswer) {
@@ -1007,6 +1144,28 @@ func coerceCoachingSessionAgentOutput(parsed coachingSessionAgentOutput, rawFiel
 	if parsed.StateAction == CoachingStateActionPause {
 		parsed.ShouldPause = true
 	}
+	if rawStateAction, ok := rawFields["state_action"]; ok {
+		rawValue := strings.Trim(string(rawStateAction), `"`)
+		if rawValue != "" && normalizeCoachingStateAction(rawValue) == CoachingStateActionChatOnly && rawValue != CoachingStateActionChatOnly {
+			parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+				RuleID:  DefenseRuleStateActionWhitelist,
+				Applied: true,
+				Reason:  fmt.Sprintf("unknown state_action %q fell back to chat_only", rawValue),
+			})
+		}
+	}
+	if parsed.Score < 0 || parsed.Score > 100 {
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleRecordAttemptScoreRange,
+			Applied: true,
+			Reason:  fmt.Sprintf("score %d is outside valid range 0-100", parsed.Score),
+		})
+	}
+	parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+		RuleID:  DefenseRuleMemoryItemsWriteWarning,
+		Applied: false,
+		Reason:  "memory_items write boundary check is a passive warning; enforcement occurs at service_actions level",
+	})
 	if !isFormalCoachingAttempt(parsed) {
 		parsed = clearCoachingFormalScoringMetadata(parsed)
 	}
@@ -1100,11 +1259,14 @@ func coachingNextActionForStateAction(stateAction string, fallback string) strin
 	}
 }
 
-func coachingSessionTraceActions(parsed coachingSessionAgentOutput) []string {
+func coachingSessionTraceActions(parsed coachingSessionAgentOutput, reusedUserTurn bool) []string {
 	actions := []string{
 		"recorded coaching_session user turn",
 		"recorded coaching_session assistant turn",
 		"updated coaching_session state",
+	}
+	if reusedUserTurn {
+		actions[0] = "reused coaching_session user turn"
 	}
 	if parsed.StateAction == CoachingStateActionRecordAttempt {
 		actions = append(actions, "recorded coaching_task_attempt", "updated practice_states")
@@ -1223,6 +1385,7 @@ func activeCoachingSessionStatuses() []string {
 		CoachingSessionStatusInProgress,
 		CoachingSessionStatusWaitingUserAnswer,
 		CoachingSessionStatusEvaluating,
+		CoachingSessionStatusRetriableFailed,
 		CoachingSessionStatusNeedsRevision,
 		CoachingSessionStatusTaskCompleted,
 		CoachingSessionStatusPaused,
@@ -1314,6 +1477,7 @@ func toCoachingSessionVO(session CoachingSession) vo.CoachingSessionVO {
 		ProgressSummary:      session.ProgressSummary,
 		LastAgentMessage:     session.LastAgentMessage,
 		ErrorMessage:         session.ErrorMessage,
+		FailedRetryCount:     session.FailedRetryCount,
 		StartedAt:            session.StartedAt,
 		LastActiveAt:         session.LastActiveAt,
 		CompletedAt:          session.CompletedAt,

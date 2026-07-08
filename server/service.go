@@ -17,12 +17,13 @@ import (
 )
 
 type Server struct {
-	db                 *gorm.DB
-	agents             AgentProvider
-	mediaDir           string
-	asrClient          ASRClient
-	audioExtractor     AudioExtractor
-	transcriptionQueue chan string
+	db                    *gorm.DB
+	agents                AgentProvider
+	mediaDir              string
+	asrClient             ASRClient
+	audioExtractor        AudioExtractor
+	transcriptionQueue    chan string
+	traceBeforeCreateHook func(*AgentDecisionTrace) error
 }
 
 type AgentProvider interface {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-web-base/agent"
 	"agent-web-base/vo"
@@ -93,6 +94,131 @@ func TestStartMockInterviewResumesActiveSession(t *testing.T) {
 	}
 	if runners[agent.AgentTypeMockInterviewer].taskCalls != 1 {
 		t.Fatalf("mock interviewer calls = %d, want 1", runners[agent.AgentTypeMockInterviewer].taskCalls)
+	}
+}
+
+func TestResumeFailedMockInterviewRetriesLatestUserTurn(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runner := runners[agent.AgentTypeMockInterviewer]
+	runner.taskResponse = sampleMockStartJSON()
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{
+		UserID: "user_001",
+		PlanID: planID,
+	})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+
+	runner.taskErr = errors.New("model unavailable")
+	runner.taskResponse = "partial mock output"
+	if _, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+		Answer:     "我会从工具失败恢复回答。",
+		SubmitMode: mockSubmitModeFormalAnswer,
+	}); err == nil {
+		t.Fatalf("SubmitMockTurn() error = nil, want model error")
+	}
+	assertMockUserTurnCount(t, s, mock.MockID, 1)
+
+	runner.taskErr = nil
+	runner.taskResponse = sampleMockTurnJSON("恢复后的追问", 82)
+	resumedTurn, err := s.ResumeFailedMockInterview(context.Background(), mock.MockID)
+	if err != nil {
+		t.Fatalf("ResumeFailedMockInterview() error = %v", err)
+	}
+	if resumedTurn.NextQuestion != "恢复后的追问" {
+		t.Fatalf("next_question = %q, want resumed response", resumedTurn.NextQuestion)
+	}
+	got, err := s.GetMockInterview(mock.MockID)
+	if err != nil {
+		t.Fatalf("GetMockInterview() error = %v", err)
+	}
+	if got.Status != MockInterviewStatusWaitingAnswer {
+		t.Fatalf("status = %q, want %q", got.Status, MockInterviewStatusWaitingAnswer)
+	}
+	if got.FailedRetryCount != 1 {
+		t.Fatalf("failed_retry_count = %d, want 1", got.FailedRetryCount)
+	}
+	assertMockUserTurnCount(t, s, mock.MockID, 1)
+}
+
+func TestSubmitMockTurn_ReusedOrphanFailureDoesNotDuplicateUserTurn(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runner := runners[agent.AgentTypeMockInterviewer]
+	runner.taskResponse = sampleMockStartJSON()
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{
+		UserID: "user_001",
+		PlanID: planID,
+	})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	now := time.Now().Unix()
+	orphan := MockTurn{
+		TurnID:              "orphan-mock-user-turn",
+		MockID:              mock.MockID,
+		UserID:              mock.UserID,
+		InterviewID:         mock.InterviewID,
+		TurnIndex:           2,
+		Role:                mockTurnRoleUser,
+		TurnType:            mockTurnTypeUserAnswer,
+		Phase:               MockInterviewStatusEvaluating,
+		Content:             "已有 mock 用户提交",
+		InterviewerQuestion: mock.FirstQuestion,
+		UserAnswer:          "已有 mock 用户提交",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	if err := s.db.Create(&orphan).Error; err != nil {
+		t.Fatalf("seed orphan turn: %v", err)
+	}
+	runner.taskErr = errors.New("model unavailable")
+	runner.taskResponse = "partial mock output"
+
+	if _, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+		Answer:     "新的重复提交不应该写入",
+		SubmitMode: mockSubmitModeFormalAnswer,
+	}); err == nil {
+		t.Fatalf("SubmitMockTurn() error = nil, want model error")
+	}
+	assertMockUserTurnCount(t, s, mock.MockID, 1)
+}
+
+func TestMockDefenseRulesRecordedInNormalization(t *testing.T) {
+	parsed, err := parseMockTurnOutput(`{
+  "visible_message": "先聊一下，不记录正式 mock 尝试。",
+  "user_intent": "smalltalk",
+  "state_action": "record_attempt",
+  "confidence": 0.82,
+  "needs_clarification": false,
+  "input_type": "formal_answer",
+  "agent_message": "不应覆盖 visible_message",
+  "score": 130,
+  "feedback": "不应保存评分。",
+  "topic": "Agent 工具调用",
+  "weakness_tags": ["Agent 工具调用"],
+  "next_action": "ask_followup",
+  "should_update_practice_state": true,
+  "practice_updates": [{"topic":"Agent 工具调用","score":130,"feedback":"不应保存。"}],
+  "should_complete_mock": false,
+  "follow_up_reason": "不应保存。",
+  "topic_tags": ["Agent 工具调用"],
+  "next_question": "不应该推进"
+}`, mockSubmitModeChat)
+	if err != nil {
+		t.Fatalf("parseMockTurnOutput() error = %v", err)
+	}
+	encoded := marshalDefenseRuleDecisions(parsed.DefenseRules)
+	for _, want := range []string{
+		DefenseRuleChatSubmitModeForcesChatOnly,
+		DefenseRuleSmalltalkUnclearChatOnly,
+		DefenseRuleRecordAttemptScoreRange,
+		DefenseRuleMemoryItemsWriteWarning,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("defense rules = %s, want %s", encoded, want)
+		}
 	}
 }
 
@@ -877,6 +1003,19 @@ func sampleMockStartJSON() string {
   "overall_goal": "模拟后端二面，重点追问项目深度、Redis 和 Agent 工具调用异常处理。",
   "first_question": "请先介绍一下你最近做的 Agent 项目，重点说清楚它解决了什么具体问题。"
 }`
+}
+
+func assertMockUserTurnCount(t *testing.T, s *Server, mockID string, want int64) {
+	t.Helper()
+	var count int64
+	if err := s.db.Model(&MockTurn{}).
+		Where("mock_id = ? AND role = ?", mockID, mockTurnRoleUser).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count mock user turns: %v", err)
+	}
+	if count != want {
+		t.Fatalf("mock user turn count = %d, want %d", count, want)
+	}
 }
 
 func sampleMockTurnJSON(nextQuestion string, score int) string {
