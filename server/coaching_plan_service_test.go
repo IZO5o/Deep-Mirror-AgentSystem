@@ -55,6 +55,109 @@ func TestGenerateCoachingPlanWithoutMemoryItems(t *testing.T) {
 	}
 }
 
+func TestGeneratePracticeGoalCoachingPlanUsesGoalContextWithoutInterview(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	goal, err := s.CreatePracticeGoal(vo.CreatePracticeGoalReq{
+		UserID:         "user_001",
+		CompanyName:    "ByteDance",
+		JobTitle:       "Backend Engineer",
+		TargetRound:    "second_round",
+		JobDescription: "负责高并发推荐服务",
+		FocusTopics:    []string{"缓存一致性", "Redlock 争议点"},
+		RemainingDays:  4,
+	})
+	if err != nil {
+		t.Fatalf("CreatePracticeGoal() error = %v", err)
+	}
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleSingleTaskCoachingPlanJSON("goal strategy")
+
+	plan, err := s.GeneratePracticeGoalCoachingPlan(context.Background(), goal.GoalID, vo.GeneratePracticeGoalCoachingPlanReq{
+		UserID: "user_001",
+	})
+	if err != nil {
+		t.Fatalf("GeneratePracticeGoalCoachingPlan() error = %v", err)
+	}
+	if plan.InterviewID != "" || plan.PracticeGoalID != goal.GoalID || plan.SourceType != CoachingPlanSourcePracticeGoal {
+		t.Fatalf("plan = %#v, want practice-goal origin without interview_id", plan)
+	}
+	prompt := runners[agent.AgentTypeSecondRoundCoach].taskQueries[0]
+	for _, want := range []string{"practice_goal", "Practice goal cold start context", "负责高并发推荐服务", "Redlock 争议点"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	tasks, err := s.ListCoachingTasks(plan.PlanID)
+	if err != nil {
+		t.Fatalf("ListCoachingTasks() error = %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].InterviewID != "" || tasks[0].PracticeGoalID != goal.GoalID || tasks[0].SourceType != CoachingPlanSourcePracticeGoal {
+		t.Fatalf("tasks = %#v, want practice-goal source fields", tasks)
+	}
+}
+
+func TestGeneratePracticeGoalCoachingPlanFailureClearsStaleTasks(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	goal, err := s.CreatePracticeGoal(vo.CreatePracticeGoalReq{
+		UserID:        "user_001",
+		CompanyName:   "ByteDance",
+		TargetRound:   "second_round",
+		FocusTopics:   []string{"缓存一致性"},
+		RemainingDays: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreatePracticeGoal() error = %v", err)
+	}
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleSingleTaskCoachingPlanJSON("goal strategy")
+	plan, err := s.GeneratePracticeGoalCoachingPlan(context.Background(), goal.GoalID, vo.GeneratePracticeGoalCoachingPlanReq{UserID: "user_001"})
+	if err != nil {
+		t.Fatalf("GeneratePracticeGoalCoachingPlan() success error = %v", err)
+	}
+	tasks, err := s.ListCoachingTasks(plan.PlanID)
+	if err != nil {
+		t.Fatalf("ListCoachingTasks() after success error = %v", err)
+	}
+	if len(tasks) == 0 {
+		t.Fatalf("tasks after success = 0, want stale task setup")
+	}
+
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = "not json"
+	if _, err := s.GeneratePracticeGoalCoachingPlan(context.Background(), goal.GoalID, vo.GeneratePracticeGoalCoachingPlanReq{UserID: "user_001"}); err == nil {
+		t.Fatalf("GeneratePracticeGoalCoachingPlan() failure error = nil, want parse error")
+	}
+	tasks, err = s.ListCoachingTasks(plan.PlanID)
+	if err != nil {
+		t.Fatalf("ListCoachingTasks() after failure error = %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("tasks after failed regeneration = %d, want stale tasks cleared", len(tasks))
+	}
+}
+
+func TestGenerateCoachingPlanStillUsesInterviewFlow(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, _ := createCoachingReadyInterview(t, s, runners)
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleSingleTaskCoachingPlanJSON("interview strategy")
+
+	plan, err := s.GenerateCoachingPlan(context.Background(), session.InterviewID, vo.GenerateCoachingPlanReq{
+		UserID:        "user_001",
+		TargetRound:   "second_round",
+		RemainingDays: 2,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCoachingPlan() error = %v", err)
+	}
+	if plan.InterviewID != session.InterviewID || plan.PracticeGoalID != "" || plan.SourceType != CoachingPlanSourceInterview {
+		t.Fatalf("plan = %#v, want interview source", plan)
+	}
+	tasks, err := s.ListCoachingTasks(plan.PlanID)
+	if err != nil {
+		t.Fatalf("ListCoachingTasks() error = %v", err)
+	}
+	if len(tasks) == 0 || tasks[0].InterviewID != session.InterviewID || tasks[0].PracticeGoalID != "" || tasks[0].SourceType != CoachingPlanSourceInterview {
+		t.Fatalf("tasks = %#v, want interview source fields", tasks)
+	}
+}
+
 func TestGenerateCoachingPlanIncludesReviewQuestionsAndMemoryItems(t *testing.T) {
 	s, runners := newTestServerWithFakeAgents(t)
 	session, memoryID := createCoachingReadyInterview(t, s, runners)

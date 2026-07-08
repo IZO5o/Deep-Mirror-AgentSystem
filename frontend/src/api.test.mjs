@@ -58,6 +58,54 @@ async function main() {
     { user_id: 'user_001', target_round: 'second_round', remaining_days: 3 },
   )
 
+  await assertPostBody(
+    'createPracticeGoal path/body',
+    () => api.createPracticeGoal({
+      user_id: 'user_001',
+      company_name: 'ByteDance',
+      job_title: 'Backend Engineer',
+      target_round: 'second_round',
+      focus_topics: ['缓存一致性'],
+      remaining_days: 3,
+    }),
+    '/api/practice-goals',
+    {
+      user_id: 'user_001',
+      company_name: 'ByteDance',
+      job_title: 'Backend Engineer',
+      target_round: 'second_round',
+      focus_topics: ['缓存一致性'],
+      remaining_days: 3,
+    },
+  )
+
+  installFetch()
+  await api.listPracticeGoals({ user_id: 'user_001', status: 'active' })
+  assert.equal(latestCall().path, '/api/practice-goals?user_id=user_001&status=active')
+
+  installFetch()
+  await api.getPracticeGoal('goal_1')
+  assert.equal(latestCall().path, '/api/practice-goals/goal_1')
+
+  installFetch()
+  await api.archivePracticeGoal('goal_1')
+  assert.equal(latestCall().path, '/api/practice-goals/goal_1/archive')
+  assert.equal(latestCall().init.method, 'POST')
+
+  await assertPostBody(
+    'generatePracticeGoalCoachingPlan path/body',
+    () => api.generatePracticeGoalCoachingPlan('goal_1', { user_id: 'user_001', target_round: 'second_round', remaining_days: 3 }),
+    '/api/practice-goals/goal_1/coaching-plan',
+    { user_id: 'user_001', target_round: 'second_round', remaining_days: 3 },
+  )
+
+  await assertPostBody(
+    'startPracticeGoalMock path/body',
+    () => api.startPracticeGoalMock('goal_1', { user_id: 'user_001', target_round: 'second_round', focus_topic: '缓存一致性' }),
+    '/api/practice-goals/goal_1/mock',
+    { user_id: 'user_001', target_round: 'second_round', focus_topic: '缓存一致性' },
+  )
+
   installFetch()
   await api.startOrResumeCoachingSession('plan_1', 'user_001')
   assert.equal(latestCall().path, '/api/coaching-plans/plan_1/sessions?user_id=user_001')
