@@ -12,6 +12,34 @@ import (
 	"agent-web-base/vo"
 )
 
+func TestStartPracticeGoalCoachingSessionCarriesGoalID(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	goal, err := s.CreatePracticeGoal(vo.CreatePracticeGoalReq{
+		UserID:        "user_001",
+		CompanyName:   "ByteDance",
+		JobTitle:      "Backend Engineer",
+		TargetRound:   "second_round",
+		FocusTopics:   []string{"缓存一致性"},
+		RemainingDays: 3,
+	})
+	if err != nil {
+		t.Fatalf("CreatePracticeGoal() error = %v", err)
+	}
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleSingleTaskCoachingPlanJSON("practice goal strategy")
+	plan, err := s.GeneratePracticeGoalCoachingPlan(context.Background(), goal.GoalID, vo.GeneratePracticeGoalCoachingPlanReq{UserID: "user_001"})
+	if err != nil {
+		t.Fatalf("GeneratePracticeGoalCoachingPlan() error = %v", err)
+	}
+
+	session, err := s.StartOrResumeCoachingSession(plan.PlanID, "user_001")
+	if err != nil {
+		t.Fatalf("StartOrResumeCoachingSession() error = %v", err)
+	}
+	if session.Session.InterviewID != "" || session.Session.PracticeGoalID != goal.GoalID {
+		t.Fatalf("session source fields = %#v, want practice_goal_id only", session.Session)
+	}
+}
+
 func TestCoachingSessionPromptIncludesPersistentState(t *testing.T) {
 	state := `{"preferred_depth":"system design tradeoffs","weaknesses":["timeout budgeting"],"updated_at":123}`
 	staticContext := buildCoachingTurnStaticContext(
