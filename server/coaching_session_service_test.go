@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -259,6 +260,110 @@ func TestStartOrResumeCoachingSession_Idempotent(t *testing.T) {
 	}
 	if runners[agent.AgentTypeSecondRoundCoach].taskCalls != 1 {
 		t.Fatalf("second_round_coach task calls = %d, want only plan generation call", runners[agent.AgentTypeSecondRoundCoach].taskCalls)
+	}
+}
+
+func TestResumeFailedCoachingSessionRetriesLatestUserTurn(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	runner := runners[agent.AgentTypeSecondRoundCoach]
+	runner.taskErr = errors.New("model unavailable")
+	runner.taskResponse = "partial coaching output"
+
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "我会从缓存一致性和失败补偿回答。",
+		SubmitMode: CoachingSubmitModeFormalAnswer,
+	}); err == nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want model error")
+	}
+	assertCoachingUserTurnCount(t, s, session.Session.SessionID, 1)
+
+	runner.taskErr = nil
+	runner.taskResponse = sampleCoachingSessionDecisionJSON(CoachingInputTypeFormalAnswer, true, true, 88, "恢复后回答达标。", CoachingNextActionPromptNext, false)
+	resumed, err := s.ResumeFailedCoachingSession(context.Background(), session.Session.SessionID)
+	if err != nil {
+		t.Fatalf("ResumeFailedCoachingSession() error = %v", err)
+	}
+	if resumed.Session.Status != CoachingSessionStatusWaitingUserAnswer {
+		t.Fatalf("status = %q, want %q", resumed.Session.Status, CoachingSessionStatusWaitingUserAnswer)
+	}
+	if resumed.Session.FailedRetryCount != 1 {
+		t.Fatalf("failed_retry_count = %d, want 1", resumed.Session.FailedRetryCount)
+	}
+	if len(resumed.Attempts) != 1 {
+		t.Fatalf("attempts length = %d, want 1", len(resumed.Attempts))
+	}
+	assertCoachingUserTurnCount(t, s, session.Session.SessionID, 1)
+}
+
+func TestSubmitCoachingSessionTurn_ReusedOrphanFailureDoesNotDuplicateUserTurn(t *testing.T) {
+	s, runners, plan := createCoachingSessionReadyPlan(t)
+	session := startTestCoachingSession(t, s, plan.PlanID)
+	now := time.Now().Unix()
+	orphan := CoachingSessionTurn{
+		TurnID:         "orphan-coaching-user-turn",
+		SessionID:      session.Session.SessionID,
+		CoachingPlanID: plan.PlanID,
+		Role:           CoachingTurnRoleUser,
+		TurnType:       CoachingInputTypeFormalAnswer,
+		Content:        "已有的用户提交",
+		CoachingTaskID: session.Session.CurrentTaskID,
+		CreatedAt:      now,
+	}
+	if err := s.db.Create(&orphan).Error; err != nil {
+		t.Fatalf("seed orphan turn: %v", err)
+	}
+	runners[agent.AgentTypeSecondRoundCoach].taskErr = errors.New("model unavailable")
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = "partial coaching output"
+
+	if _, err := s.SubmitCoachingSessionTurn(context.Background(), session.Session.SessionID, vo.SubmitCoachingSessionTurnReq{
+		UserInput:  "新的重复提交不应该写入",
+		SubmitMode: CoachingSubmitModeFormalAnswer,
+	}); err == nil {
+		t.Fatalf("SubmitCoachingSessionTurn() error = nil, want model error")
+	}
+	assertCoachingUserTurnCount(t, s, session.Session.SessionID, 1)
+}
+
+func TestServerDefenseRulesConstantsExist(t *testing.T) {
+	for _, ruleID := range []string{
+		DefenseRuleChatSubmitModeForcesChatOnly,
+		DefenseRuleStateActionWhitelist,
+		DefenseRuleRecordAttemptScoreRange,
+		DefenseRuleSmalltalkUnclearChatOnly,
+		DefenseRuleMemoryItemsWriteWarning,
+	} {
+		if strings.TrimSpace(ruleID) == "" {
+			t.Fatalf("empty defense rule id")
+		}
+	}
+}
+
+func TestCoachingDefenseRulesRecordedInCoercion(t *testing.T) {
+	parsed, err := parseCoachingSessionAgentOutput(sampleCoachingSessionIntentDecisionJSON(
+		CoachingInputTypeFormalAnswer,
+		"先聊一下，不记录正式尝试。",
+		CoachingUserIntentSmalltalk,
+		CoachingStateActionRecordAttempt,
+		true,
+		true,
+		120,
+		"不应保存的评分",
+		CoachingNextActionPromptNext,
+		false,
+	), CoachingSubmitModeChat)
+	if err != nil {
+		t.Fatalf("parseCoachingSessionAgentOutput() error = %v", err)
+	}
+	encoded := marshalDefenseRuleDecisions(parsed.DefenseRules)
+	for _, want := range []string{
+		DefenseRuleChatSubmitModeForcesChatOnly,
+		DefenseRuleSmalltalkUnclearChatOnly,
+		DefenseRuleMemoryItemsWriteWarning,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("defense rules = %s, want %s", encoded, want)
+		}
 	}
 }
 
@@ -1172,6 +1277,19 @@ func startTestCoachingSession(t *testing.T, s *Server, planID string) vo.Coachin
 		t.Fatalf("StartOrResumeCoachingSession() error = %v", err)
 	}
 	return session
+}
+
+func assertCoachingUserTurnCount(t *testing.T, s *Server, sessionID string, want int64) {
+	t.Helper()
+	var count int64
+	if err := s.db.Model(&CoachingSessionTurn{}).
+		Where("session_id = ? AND role = ?", sessionID, CoachingTurnRoleUser).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count coaching user turns: %v", err)
+	}
+	if count != want {
+		t.Fatalf("coaching user turn count = %d, want %d", count, want)
+	}
 }
 
 func sampleCoachingSessionDecisionJSON(inputType string, passed bool, complete bool, score int, feedback string, nextAction string, pause bool) string {

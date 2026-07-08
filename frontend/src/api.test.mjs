@@ -118,6 +118,11 @@ async function main() {
     { user_input: 'answer', submit_mode: 'formal_answer' },
   )
 
+  installFetch()
+  await api.resumeCoachingSession('session_1')
+  assert.equal(latestCall().path, '/api/coaching-sessions/session_1/resume')
+  assert.equal(latestCall().init.method, 'POST')
+
   await assertPostBody(
     'startMockInterview path/body',
     () => api.startMockInterview('interview_1', { user_id: 'user_001', plan_id: 'plan_1', target_round: 'second_round' }),
@@ -131,6 +136,11 @@ async function main() {
     '/api/mock-interviews/mock_1/turns',
     { answer: 'my answer', submit_mode: 'chat' },
   )
+
+  installFetch()
+  await api.resumeMockInterview('mock_1')
+  assert.equal(latestCall().path, '/api/mock-interviews/mock_1/resume')
+  assert.equal(latestCall().init.method, 'POST')
 
   installFetch()
   await api.listAgentDecisionTraces({

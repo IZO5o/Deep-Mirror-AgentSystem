@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -87,6 +88,41 @@ func TestMockInterviewControllerMissingAnswerReturns400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestResumeFailedMockInterviewControllerRoute(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	router := NewRouter(s)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runner := runners[agent.AgentTypeMockInterviewer]
+	runner.taskResponse = sampleMockStartJSON()
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{
+		UserID: "user_001",
+		PlanID: planID,
+	})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	runner.taskErr = errors.New("model unavailable")
+	runner.taskResponse = "partial mock output"
+	if _, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+		Answer:     "我会从工具失败恢复回答。",
+		SubmitMode: mockSubmitModeFormalAnswer,
+	}); err == nil {
+		t.Fatalf("SubmitMockTurn() error = nil, want model error")
+	}
+
+	runner.taskErr = nil
+	runner.taskResponse = sampleMockTurnJSON("恢复后的追问", 82)
+	resumeRec := performJSONRequest(router, http.MethodPost, "/api/mock-interviews/"+mock.MockID+"/resume", "")
+	if resumeRec.Code != http.StatusOK {
+		t.Fatalf("resume status = %d, want %d; body=%s", resumeRec.Code, http.StatusOK, resumeRec.Body.String())
+	}
+	var turn vo.MockTurnVO
+	decodeOKData(t, resumeRec, &turn)
+	if turn.NextQuestion != "恢复后的追问" {
+		t.Fatalf("next_question = %q, want resumed response", turn.NextQuestion)
 	}
 }
 

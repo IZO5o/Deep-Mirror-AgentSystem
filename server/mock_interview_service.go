@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -16,15 +17,16 @@ import (
 )
 
 const (
-	MockInterviewStatusCreated        = "created"
-	MockInterviewStatusInProgress     = "in_progress"
-	MockInterviewStatusWaitingAnswer  = "waiting_answer"
-	MockInterviewStatusEvaluating     = "evaluating_answer"
-	MockInterviewStatusAskingFollowup = "asking_followup"
-	MockInterviewStatusSwitchingTopic = "switching_topic"
-	MockInterviewStatusCompleted      = "completed"
-	MockInterviewStatusFailed         = "failed"
-	MockInterviewStatusCancelled      = "cancelled"
+	MockInterviewStatusCreated         = "created"
+	MockInterviewStatusInProgress      = "in_progress"
+	MockInterviewStatusWaitingAnswer   = "waiting_answer"
+	MockInterviewStatusEvaluating      = "evaluating_answer"
+	MockInterviewStatusAskingFollowup  = "asking_followup"
+	MockInterviewStatusSwitchingTopic  = "switching_topic"
+	MockInterviewStatusCompleted       = "completed"
+	MockInterviewStatusFailed          = "failed"
+	MockInterviewStatusRetriableFailed = "retriable_failed"
+	MockInterviewStatusCancelled       = "cancelled"
 
 	mockTurnRoleUser      = "user"
 	mockTurnRoleAssistant = "assistant"
@@ -93,6 +95,7 @@ type mockTurnOutput struct {
 	TopicTags                 []string              `json:"topic_tags"`
 	NextQuestion              string                `json:"next_question"`
 	PersistentStateUpdate     PersistentStateUpdate `json:"persistent_state_update"`
+	DefenseRules              []DefenseRuleDecision `json:"defense_rules,omitempty"`
 }
 
 type mockCompleteOutput struct {
@@ -410,6 +413,10 @@ func (s *Server) StartPracticeGoalMockInterview(ctx context.Context, goalID stri
 }
 
 func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.SubmitMockTurnReq) (vo.MockTurnVO, error) {
+	return s.submitMockTurnInternal(ctx, mockID, req, nil)
+}
+
+func (s *Server) submitMockTurnInternal(ctx context.Context, mockID string, req vo.SubmitMockTurnReq, existingUserTurn *MockTurn) (vo.MockTurnVO, error) {
 	if s.agents == nil {
 		return vo.MockTurnVO{}, fmt.Errorf("agent provider is nil")
 	}
@@ -418,13 +425,31 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 	if err := s.db.First(&mock, "mock_id = ?", mockID).Error; err != nil {
 		return vo.MockTurnVO{}, err
 	}
-	if !isMockSubmittableStatus(mock.Status) {
-		return vo.MockTurnVO{}, fmt.Errorf("mock interview status %q does not accept turns", mock.Status)
+	if existingUserTurn == nil {
+		if !isMockSubmittableStatus(mock.Status) {
+			return vo.MockTurnVO{}, fmt.Errorf("mock interview status %q does not accept turns", mock.Status)
+		}
+		orphan, err := s.findLatestOrphanMockUserTurn(mockID)
+		if err != nil {
+			return vo.MockTurnVO{}, err
+		}
+		if orphan != nil {
+			existingUserTurn = orphan
+		}
 	}
 
 	turns, err := s.loadMockTurns(mockID)
 	if err != nil {
 		return vo.MockTurnVO{}, err
+	}
+	answer := strings.TrimSpace(req.Answer)
+	if existingUserTurn != nil {
+		answer = existingUserTurn.UserAnswer
+		if strings.TrimSpace(answer) == "" {
+			answer = existingUserTurn.Content
+		}
+	} else if answer == "" {
+		return vo.MockTurnVO{}, fmt.Errorf("answer is required")
 	}
 	var input mockInput
 	if mock.PracticeGoalID != "" {
@@ -445,9 +470,10 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 	}
 
 	staticContext := buildMockTurnInstructionContext() + "\n\n" + buildMockTurnStaticContext(input, mock, currentQuestion)
-	historyMessages := projectMockTurnsToMessages(turns)
+	historyTurns := mockHistoryTurnsForPrompt(turns, existingUserTurn)
+	historyMessages := projectMockTurnsToMessages(historyTurns)
 	compression := compressBusinessHistoryForPrompt(historyMessages, BusinessHistoryCompressionConfig{})
-	userMessage := buildMockTurnUserMessage(req.Answer, submitMode, currentQuestion)
+	userMessage := buildMockTurnUserMessage(answer, submitMode, currentQuestion)
 	inputSnapshot := marshalTraceJSON(map[string]any{
 		"mock_id":                   mock.MockID,
 		"interview_id":              mock.InterviewID,
@@ -464,7 +490,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		"history_summary_generated": compression.SummaryGenerated,
 		"history_truncated":         compression.Truncated,
 		"current_question_length":   len(currentQuestion),
-		"answer_length":             len(req.Answer),
+		"answer_length":             len(answer),
 		"question_count":            len(input.questions),
 		"static_context_length":     len(staticContext),
 		"user_message_length":       len(userMessage),
@@ -498,7 +524,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 	}, compression.Messages, userMessage, viewCh, confirmCh)
 	if err != nil {
 		log.Warnf("mock interviewer turn failed for mock %s: %v", mockID, err)
-		_ = s.failMockTurn(mock, len(turns), currentQuestion, req.Answer, fallbackRaw(result.Response, err), err.Error())
+		_ = s.failMockTurn(mock, len(turns), currentQuestion, answer, fallbackRaw(result.Response, err), err.Error(), existingUserTurn)
 		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
 			UserID:                  mock.UserID,
 			InterviewID:             mock.InterviewID,
@@ -519,7 +545,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 	parsed, err := parseMockTurnOutput(result.Response, submitMode)
 	if err != nil {
 		log.Warnf("parse mock turn output failed for mock %s: %v, raw=%s", mockID, err, result.Response)
-		_ = s.failMockTurn(mock, len(turns), currentQuestion, req.Answer, result.Response, err.Error())
+		_ = s.failMockTurn(mock, len(turns), currentQuestion, answer, result.Response, err.Error(), existingUserTurn)
 		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
 			UserID:                  mock.UserID,
 			InterviewID:             mock.InterviewID,
@@ -546,28 +572,37 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 	if parsed.InputType == mockInputTypeExplanationRequest {
 		userTurnType = mockTurnTypeExplanationRequest
 	}
-	userTurn := MockTurn{
-		TurnID:              uuid.New().String(),
-		MockID:              mock.MockID,
-		UserID:              mock.UserID,
-		InterviewID:         mock.InterviewID,
-		PracticeGoalID:      mock.PracticeGoalID,
-		TurnIndex:           nextIndex,
-		Role:                mockTurnRoleUser,
-		TurnType:            userTurnType,
-		Phase:               MockInterviewStatusEvaluating,
-		Content:             req.Answer,
-		InterviewerQuestion: currentQuestion,
-		UserAnswer:          req.Answer,
-		RawAgentOutput:      result.Response,
-		CreatedAt:           now,
-		UpdatedAt:           now,
+	var userTurn MockTurn
+	if existingUserTurn != nil {
+		userTurn = *existingUserTurn
+	} else {
+		userTurn = MockTurn{
+			TurnID:              uuid.New().String(),
+			MockID:              mock.MockID,
+			UserID:              mock.UserID,
+			InterviewID:         mock.InterviewID,
+			PracticeGoalID:      mock.PracticeGoalID,
+			TurnIndex:           nextIndex,
+			Role:                mockTurnRoleUser,
+			TurnType:            userTurnType,
+			Phase:               MockInterviewStatusEvaluating,
+			Content:             answer,
+			InterviewerQuestion: currentQuestion,
+			UserAnswer:          answer,
+			RawAgentOutput:      result.Response,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+		}
 	}
 	nextIndex++
 
-	created := []MockTurn{userTurn}
+	created := []MockTurn{}
+	if existingUserTurn == nil {
+		created = append(created, userTurn)
+	}
 	updates := map[string]any{
 		"raw_agent_output": result.Response,
+		"error_message":    "",
 		"updated_at":       now,
 	}
 	var responseTurn MockTurn
@@ -633,7 +668,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			Phase:               MockInterviewStatusEvaluating,
 			Content:             parsed.Feedback,
 			InterviewerQuestion: currentQuestion,
-			UserAnswer:          req.Answer,
+			UserAnswer:          answer,
 			Feedback:            parsed.Feedback,
 			Score:               clampScore(parsed.Score),
 			FollowUpReason:      parsed.FollowUpReason,
@@ -659,6 +694,20 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			updates["status"] = MockInterviewStatusWaitingAnswer
 		}
 
+		successTraceInput := AgentDecisionTraceInput{
+			UserID:                  mock.UserID,
+			InterviewID:             mock.InterviewID,
+			AgentType:               string(agent.AgentTypeMockInterviewer),
+			SourceType:              AgentTraceSourceMockInterview,
+			SourceID:                mock.MockID,
+			StepName:                AgentTraceStepMockTurn,
+			SelectedContextSnapshot: selectedContextSnapshot,
+			InputSnapshot:           inputSnapshot,
+			RawAgentOutput:          result.Response,
+			ParsedDecision:          marshalTraceJSON(parsed),
+			ServiceActions:          marshalTraceJSON(mockTurnTraceActions(parsed, len(created))),
+			Status:                  AgentDecisionTraceStatusSucceeded,
+		}
 		err = s.db.Transaction(func(tx *gorm.DB) error {
 			for _, turn := range created {
 				if err := tx.Create(&turn).Error; err != nil {
@@ -673,9 +722,12 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			if err := mergeMockPersistentStateUpdateTx(tx, mockID, updates, parsed.PersistentStateUpdate, now); err != nil {
 				return err
 			}
-			return tx.Model(&MockInterview{}).
+			if err := tx.Model(&MockInterview{}).
 				Where("mock_id = ?", mockID).
-				Updates(updates).Error
+				Updates(updates).Error; err != nil {
+				return err
+			}
+			return s.recordAgentDecisionTraceTx(tx, successTraceInput)
 		})
 		if err != nil {
 			s.recordAgentDecisionTrace(AgentDecisionTraceInput{
@@ -695,20 +747,6 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			})
 			return vo.MockTurnVO{}, err
 		}
-		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
-			UserID:                  mock.UserID,
-			InterviewID:             mock.InterviewID,
-			AgentType:               string(agent.AgentTypeMockInterviewer),
-			SourceType:              AgentTraceSourceMockInterview,
-			SourceID:                mock.MockID,
-			StepName:                AgentTraceStepMockTurn,
-			SelectedContextSnapshot: selectedContextSnapshot,
-			InputSnapshot:           inputSnapshot,
-			RawAgentOutput:          result.Response,
-			ParsedDecision:          marshalTraceJSON(parsed),
-			ServiceActions:          marshalTraceJSON(mockTurnTraceActions(parsed, len(created))),
-			Status:                  AgentDecisionTraceStatusSucceeded,
-		})
 		return toMockTurnVO(responseTurn), nil
 	} else {
 		assistantTurn := buildMockOffRecordTurn(mock, nextIndex, parsed, currentQuestion, result.Response, now)
@@ -717,6 +755,20 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		responseTurn = assistantTurn
 	}
 
+	successTraceInput := AgentDecisionTraceInput{
+		UserID:                  mock.UserID,
+		InterviewID:             mock.InterviewID,
+		AgentType:               string(agent.AgentTypeMockInterviewer),
+		SourceType:              AgentTraceSourceMockInterview,
+		SourceID:                mock.MockID,
+		StepName:                AgentTraceStepMockTurn,
+		SelectedContextSnapshot: selectedContextSnapshot,
+		InputSnapshot:           inputSnapshot,
+		RawAgentOutput:          result.Response,
+		ParsedDecision:          marshalTraceJSON(parsed),
+		ServiceActions:          marshalTraceJSON(mockTurnTraceActions(parsed, len(created))),
+		Status:                  AgentDecisionTraceStatusSucceeded,
+	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		for _, turn := range created {
 			if err := tx.Create(&turn).Error; err != nil {
@@ -726,9 +778,12 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		if err := mergeMockPersistentStateUpdateTx(tx, mockID, updates, parsed.PersistentStateUpdate, now); err != nil {
 			return err
 		}
-		return tx.Model(&MockInterview{}).
+		if err := tx.Model(&MockInterview{}).
 			Where("mock_id = ?", mockID).
-			Updates(updates).Error
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		return s.recordAgentDecisionTraceTx(tx, successTraceInput)
 	})
 	if err != nil {
 		s.recordAgentDecisionTrace(AgentDecisionTraceInput{
@@ -748,20 +803,6 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		})
 		return vo.MockTurnVO{}, err
 	}
-	s.recordAgentDecisionTrace(AgentDecisionTraceInput{
-		UserID:                  mock.UserID,
-		InterviewID:             mock.InterviewID,
-		AgentType:               string(agent.AgentTypeMockInterviewer),
-		SourceType:              AgentTraceSourceMockInterview,
-		SourceID:                mock.MockID,
-		StepName:                AgentTraceStepMockTurn,
-		SelectedContextSnapshot: selectedContextSnapshot,
-		InputSnapshot:           inputSnapshot,
-		RawAgentOutput:          result.Response,
-		ParsedDecision:          marshalTraceJSON(parsed),
-		ServiceActions:          marshalTraceJSON(mockTurnTraceActions(parsed, len(created))),
-		Status:                  AgentDecisionTraceStatusSucceeded,
-	})
 	return toMockTurnVO(responseTurn), nil
 }
 
@@ -877,24 +918,78 @@ func mockTurnTraceActions(parsed mockTurnOutput, createdTurnCount int) []string 
 	return actions
 }
 
-func (s *Server) failMockTurn(mock MockInterview, existingTurnCount int, currentQuestion string, answer string, raw string, message string) error {
+func mockHistoryTurnsForPrompt(turns []MockTurn, currentUserTurn *MockTurn) []MockTurn {
+	history := make([]MockTurn, 0, len(turns))
+	for _, turn := range turns {
+		if currentUserTurn != nil && turn.TurnID == currentUserTurn.TurnID {
+			continue
+		}
+		if turn.Role == mockTurnRoleSystem || turn.TurnType == mockTurnTypeError {
+			continue
+		}
+		history = append(history, turn)
+	}
+	return history
+}
+
+func (s *Server) latestFailedMockUserTurn(mockID string) (MockTurn, error) {
+	var turn MockTurn
+	err := s.db.Where("mock_id = ? AND role = ?", mockID, mockTurnRoleUser).
+		Order("turn_index desc, created_at desc").
+		First(&turn).Error
+	return turn, err
+}
+
+func (s *Server) findLatestOrphanMockUserTurn(mockID string) (*MockTurn, error) {
+	var turn MockTurn
+	err := s.db.Where("mock_id = ? AND role = ?", mockID, mockTurnRoleUser).
+		Order("turn_index desc, created_at desc").
+		First(&turn).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var laterCount int64
+	if err := s.db.Model(&MockTurn{}).
+		Where("mock_id = ? AND turn_index > ? AND role IN ?", mockID, turn.TurnIndex, []string{mockTurnRoleAssistant, mockTurnRoleSystem}).
+		Count(&laterCount).Error; err != nil {
+		return nil, err
+	}
+	if laterCount > 0 {
+		return nil, nil
+	}
+	return &turn, nil
+}
+
+func (s *Server) failMockTurn(mock MockInterview, existingTurnCount int, currentQuestion string, answer string, raw string, message string, existingUserTurn ...*MockTurn) error {
 	now := time.Now().Unix()
-	userTurn := MockTurn{
-		TurnID:              uuid.New().String(),
-		MockID:              mock.MockID,
-		UserID:              mock.UserID,
-		InterviewID:         mock.InterviewID,
-		PracticeGoalID:      mock.PracticeGoalID,
-		TurnIndex:           existingTurnCount + 1,
-		Role:                mockTurnRoleUser,
-		TurnType:            mockTurnTypeUserAnswer,
-		Phase:               MockInterviewStatusEvaluating,
-		Content:             answer,
-		InterviewerQuestion: currentQuestion,
-		UserAnswer:          answer,
-		RawAgentOutput:      raw,
-		CreatedAt:           now,
-		UpdatedAt:           now,
+	var userTurn *MockTurn
+	if len(existingUserTurn) > 0 && existingUserTurn[0] != nil {
+		userTurn = existingUserTurn[0]
+	} else {
+		userTurn = &MockTurn{
+			TurnID:              uuid.New().String(),
+			MockID:              mock.MockID,
+			UserID:              mock.UserID,
+			InterviewID:         mock.InterviewID,
+			PracticeGoalID:      mock.PracticeGoalID,
+			TurnIndex:           existingTurnCount + 1,
+			Role:                mockTurnRoleUser,
+			TurnType:            mockTurnTypeUserAnswer,
+			Phase:               MockInterviewStatusEvaluating,
+			Content:             answer,
+			InterviewerQuestion: currentQuestion,
+			UserAnswer:          answer,
+			RawAgentOutput:      raw,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+		}
+	}
+	errorTurnIndex := existingTurnCount + 2
+	if userTurn.TurnIndex >= errorTurnIndex {
+		errorTurnIndex = userTurn.TurnIndex + 1
 	}
 	errorTurn := MockTurn{
 		TurnID:         uuid.New().String(),
@@ -902,7 +997,7 @@ func (s *Server) failMockTurn(mock MockInterview, existingTurnCount int, current
 		UserID:         mock.UserID,
 		InterviewID:    mock.InterviewID,
 		PracticeGoalID: mock.PracticeGoalID,
-		TurnIndex:      existingTurnCount + 2,
+		TurnIndex:      errorTurnIndex,
 		Role:           mockTurnRoleSystem,
 		TurnType:       mockTurnTypeError,
 		Phase:          MockInterviewStatusFailed,
@@ -913,8 +1008,10 @@ func (s *Server) failMockTurn(mock MockInterview, existingTurnCount int, current
 		UpdatedAt:      now,
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&userTurn).Error; err != nil {
-			return err
+		if len(existingUserTurn) == 0 || existingUserTurn[0] == nil {
+			if err := tx.Create(userTurn).Error; err != nil {
+				return err
+			}
 		}
 		if err := tx.Create(&errorTurn).Error; err != nil {
 			return err
@@ -928,6 +1025,41 @@ func (s *Server) failMockTurn(mock MockInterview, existingTurnCount int, current
 				"updated_at":       now,
 			}).Error
 	})
+}
+
+func (s *Server) ResumeFailedMockInterview(ctx context.Context, mockID string) (vo.MockTurnVO, error) {
+	var mock MockInterview
+	if err := s.db.First(&mock, "mock_id = ?", mockID).Error; err != nil {
+		return vo.MockTurnVO{}, err
+	}
+	if mock.Status != MockInterviewStatusFailed {
+		return vo.MockTurnVO{}, fmt.Errorf("mock interview status must be 'failed' to resume, got %q", mock.Status)
+	}
+	if mock.FailedRetryCount >= maxFailedSessionRetries {
+		return vo.MockTurnVO{}, fmt.Errorf("retry limit reached (%d)", maxFailedSessionRetries)
+	}
+	userTurn, err := s.latestFailedMockUserTurn(mock.MockID)
+	if err != nil {
+		return vo.MockTurnVO{}, err
+	}
+	now := time.Now().Unix()
+	if err := s.db.Model(&MockInterview{}).
+		Where("mock_id = ?", mock.MockID).
+		Updates(map[string]any{
+			"status":             MockInterviewStatusRetriableFailed,
+			"failed_retry_count": mock.FailedRetryCount + 1,
+			"updated_at":         now,
+		}).Error; err != nil {
+		return vo.MockTurnVO{}, err
+	}
+	answer := userTurn.UserAnswer
+	if strings.TrimSpace(answer) == "" {
+		answer = userTurn.Content
+	}
+	return s.submitMockTurnInternal(ctx, mockID, vo.SubmitMockTurnReq{
+		Answer:     answer,
+		SubmitMode: mockSubmitModeFormalAnswer,
+	}, &userTurn)
 }
 
 func (s *Server) GetMockInterview(mockID string) (vo.MockInterviewVO, error) {
@@ -1251,6 +1383,7 @@ func activeMockStatuses() []string {
 		MockInterviewStatusEvaluating,
 		MockInterviewStatusAskingFollowup,
 		MockInterviewStatusSwitchingTopic,
+		MockInterviewStatusRetriableFailed,
 	}
 }
 
@@ -1495,14 +1628,31 @@ func normalizeMockTurnOutput(parsed mockTurnOutput, rawFields map[string]json.Ra
 	}
 	if submitMode == mockSubmitModeChat && parsed.StateAction == mockStateActionRecordAttempt {
 		parsed.StateAction = mockStateActionChatOnly
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleChatSubmitModeForcesChatOnly,
+			Applied: true,
+			Reason:  "submit_mode=chat forced state_action to chat_only",
+		})
 	}
 	if parsed.StateAction == mockStateActionRecordAttempt && parsed.UserIntent != mockUserIntentAnswer {
 		parsed.StateAction = mockStateActionChatOnly
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleChatSubmitModeForcesChatOnly,
+			Applied: true,
+			Reason:  "record_attempt rejected for non-answer intent, forced chat_only",
+		})
 	}
 	if parsed.UserIntent == mockUserIntentSmalltalk || parsed.UserIntent == mockUserIntentUnclear ||
 		parsed.UserIntent == mockUserIntentAskHint || parsed.UserIntent == mockUserIntentAskExplain {
 		if parsed.StateAction != mockStateActionCancel {
 			parsed.StateAction = mockStateActionChatOnly
+			if parsed.UserIntent == mockUserIntentSmalltalk || parsed.UserIntent == mockUserIntentUnclear {
+				parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+					RuleID:  DefenseRuleSmalltalkUnclearChatOnly,
+					Applied: true,
+					Reason:  fmt.Sprintf("user_intent=%s forced state_action to chat_only", parsed.UserIntent),
+				})
+			}
 		}
 	}
 	parsed.InputType = mockInputTypeForIntent(parsed.UserIntent, legacyInputType)
@@ -1510,6 +1660,28 @@ func normalizeMockTurnOutput(parsed mockTurnOutput, rawFields map[string]json.Ra
 	if parsed.ShouldCompleteMock {
 		parsed.NextAction = mockNextActionComplete
 	}
+	if rawStateAction, ok := rawFields["state_action"]; ok {
+		rawValue := strings.Trim(string(rawStateAction), `"`)
+		if rawValue != "" && normalizeMockStateAction(rawValue) == mockStateActionChatOnly && rawValue != mockStateActionChatOnly {
+			parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+				RuleID:  DefenseRuleStateActionWhitelist,
+				Applied: true,
+				Reason:  fmt.Sprintf("unknown state_action %q fell back to chat_only", rawValue),
+			})
+		}
+	}
+	if parsed.Score < 0 || parsed.Score > 100 {
+		parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+			RuleID:  DefenseRuleRecordAttemptScoreRange,
+			Applied: true,
+			Reason:  fmt.Sprintf("score %d is outside valid range 0-100", parsed.Score),
+		})
+	}
+	parsed.DefenseRules = append(parsed.DefenseRules, DefenseRuleDecision{
+		RuleID:  DefenseRuleMemoryItemsWriteWarning,
+		Applied: false,
+		Reason:  "memory_items write boundary check is a passive warning; enforcement occurs at service_actions level",
+	})
 	if parsed.TopicTags == nil {
 		parsed.TopicTags = []string{}
 	}
@@ -1893,6 +2065,7 @@ func toMockInterviewVO(mock MockInterview) vo.MockInterviewVO {
 		FinalSummary:         mock.FinalSummary,
 		RawAgentOutput:       mock.RawAgentOutput,
 		AgentPersistentState: decodePersistentStateForVO(mock.AgentPersistentState),
+		FailedRetryCount:     mock.FailedRetryCount,
 		CreatedAt:            mock.CreatedAt,
 		UpdatedAt:            mock.UpdatedAt,
 	}
