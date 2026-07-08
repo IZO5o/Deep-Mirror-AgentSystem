@@ -179,7 +179,9 @@ type MemoryItem struct {
 type CoachingPlan struct {
 	PlanID          string `gorm:"primaryKey"`
 	UserID          string `gorm:"index"`
-	InterviewID     string `gorm:"uniqueIndex"`
+	InterviewID     string `gorm:"index"`
+	PracticeGoalID  string `gorm:"index"`
+	SourceType      string `gorm:"index"`
 	TargetRound     string `gorm:"index"`
 	RemainingDays   int
 	CompanyName     string
@@ -192,11 +194,27 @@ type CoachingPlan struct {
 	UpdatedAt       int64
 }
 
+type PracticeGoal struct {
+	GoalID         string `gorm:"primaryKey"`
+	UserID         string `gorm:"index"`
+	CompanyName    string
+	JobTitle       string
+	TargetRound    string `gorm:"index"`
+	JobDescription string
+	FocusTopics    string
+	RemainingDays  int
+	Status         string `gorm:"index"`
+	CreatedAt      int64
+	UpdatedAt      int64
+}
+
 type CoachingTask struct {
 	TaskID           string `gorm:"primaryKey"`
 	PlanID           string `gorm:"index"`
 	UserID           string `gorm:"index"`
 	InterviewID      string `gorm:"index"`
+	PracticeGoalID   string `gorm:"index"`
+	SourceType       string `gorm:"index"`
 	Sequence         int
 	DayIndex         int
 	TaskType         string `gorm:"index"`
@@ -213,6 +231,7 @@ type CoachingSession struct {
 	SessionID            string `gorm:"primaryKey"`
 	UserID               string `gorm:"index"`
 	InterviewID          string `gorm:"index"`
+	PracticeGoalID       string `gorm:"index"`
 	CoachingPlanID       string `gorm:"index"`
 	CurrentTaskID        string `gorm:"index"`
 	Status               string `gorm:"index"`
@@ -261,6 +280,7 @@ type MockInterview struct {
 	MockID               string `gorm:"primaryKey"`
 	UserID               string `gorm:"index"`
 	InterviewID          string `gorm:"index"`
+	PracticeGoalID       string `gorm:"index"`
 	PlanID               string `gorm:"index"`
 	TargetRound          string `gorm:"index"`
 	Status               string `gorm:"index"`
@@ -282,6 +302,7 @@ type MockTurn struct {
 	MockID              string `gorm:"index"`
 	UserID              string `gorm:"index"`
 	InterviewID         string `gorm:"index"`
+	PracticeGoalID      string `gorm:"index"`
 	TurnIndex           int
 	Role                string `gorm:"index"`
 	TurnType            string `gorm:"index"`
@@ -365,6 +386,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&MemoryCandidate{},
 		&MemoryItem{},
 		&CoachingPlan{},
+		&PracticeGoal{},
 		&CoachingTask{},
 		&CoachingSession{},
 		&CoachingSessionTurn{},

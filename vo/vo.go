@@ -271,9 +271,53 @@ type GenerateCoachingPlanReq struct {
 	RemainingDays int    `json:"remaining_days"`
 }
 
+type GeneratePracticeGoalCoachingPlanReq struct {
+	UserID        string `json:"user_id" binding:"required"`
+	TargetRound   string `json:"target_round"`
+	RemainingDays int    `json:"remaining_days"`
+}
+
 // UpdateCoachingTaskReq PATCH /coaching-tasks/{id} 请求体
 type UpdateCoachingTaskReq struct {
 	Status string `json:"status" binding:"required"`
+}
+
+// CreatePracticeGoalReq POST /practice-goals 请求体
+type CreatePracticeGoalReq struct {
+	UserID         string   `json:"user_id" binding:"required"`
+	CompanyName    string   `json:"company_name"`
+	JobTitle       string   `json:"job_title"`
+	TargetRound    string   `json:"target_round"`
+	JobDescription string   `json:"job_description"`
+	FocusTopics    []string `json:"focus_topics"`
+	RemainingDays  int      `json:"remaining_days"`
+}
+
+// UpdatePracticeGoalReq PATCH /practice-goals/{id} 请求体
+type UpdatePracticeGoalReq struct {
+	CompanyName    string   `json:"company_name"`
+	JobTitle       string   `json:"job_title"`
+	TargetRound    string   `json:"target_round"`
+	JobDescription string   `json:"job_description"`
+	FocusTopics    []string `json:"focus_topics"`
+	RemainingDays  int      `json:"remaining_days"`
+	Status         string   `json:"status"`
+}
+
+// PracticeGoalVO 是独立练习目标，不绑定 interview_id。
+type PracticeGoalVO struct {
+	GoalID         string   `json:"goal_id"`
+	UserID         string   `json:"user_id"`
+	InterviewID    string   `json:"interview_id"`
+	CompanyName    string   `json:"company_name"`
+	JobTitle       string   `json:"job_title"`
+	TargetRound    string   `json:"target_round"`
+	JobDescription string   `json:"job_description"`
+	FocusTopics    []string `json:"focus_topics"`
+	RemainingDays  int      `json:"remaining_days"`
+	Status         string   `json:"status"`
+	CreatedAt      int64    `json:"created_at"`
+	UpdatedAt      int64    `json:"updated_at"`
 }
 
 // CoachingPlanVO 是二面准备计划
@@ -281,6 +325,8 @@ type CoachingPlanVO struct {
 	PlanID          string `json:"plan_id"`
 	UserID          string `json:"user_id"`
 	InterviewID     string `json:"interview_id"`
+	PracticeGoalID  string `json:"practice_goal_id,omitempty"`
+	SourceType      string `json:"source_type"`
 	TargetRound     string `json:"target_round"`
 	RemainingDays   int    `json:"remaining_days"`
 	CompanyName     string `json:"company_name"`
@@ -299,6 +345,8 @@ type CoachingTaskVO struct {
 	PlanID           string   `json:"plan_id"`
 	UserID           string   `json:"user_id"`
 	InterviewID      string   `json:"interview_id"`
+	PracticeGoalID   string   `json:"practice_goal_id,omitempty"`
+	SourceType       string   `json:"source_type"`
 	Sequence         int      `json:"sequence"`
 	DayIndex         int      `json:"day_index"`
 	TaskType         string   `json:"task_type"`
@@ -322,6 +370,7 @@ type CoachingSessionVO struct {
 	SessionID            string `json:"session_id"`
 	UserID               string `json:"user_id"`
 	InterviewID          string `json:"interview_id"`
+	PracticeGoalID       string `json:"practice_goal_id,omitempty"`
 	CoachingPlanID       string `json:"coaching_plan_id"`
 	CurrentTaskID        string `json:"current_task_id,omitempty"`
 	Status               string `json:"status"`
@@ -384,6 +433,13 @@ type StartMockInterviewReq struct {
 	TargetRound string `json:"target_round"`
 }
 
+type StartPracticeGoalMockReq struct {
+	UserID      string `json:"user_id" binding:"required"`
+	PlanID      string `json:"plan_id,omitempty"`
+	TargetRound string `json:"target_round"`
+	FocusTopic  string `json:"focus_topic,omitempty"`
+}
+
 // SubmitMockTurnReq POST /mock-interviews/{id}/turns 请求体
 type SubmitMockTurnReq struct {
 	Answer     string `json:"answer" binding:"required"`
@@ -395,6 +451,7 @@ type MockInterviewVO struct {
 	MockID               string `json:"mock_id"`
 	UserID               string `json:"user_id"`
 	InterviewID          string `json:"interview_id"`
+	PracticeGoalID       string `json:"practice_goal_id,omitempty"`
 	PlanID               string `json:"plan_id,omitempty"`
 	TargetRound          string `json:"target_round"`
 	Status               string `json:"status"`
@@ -417,6 +474,7 @@ type MockTurnVO struct {
 	MockID              string   `json:"mock_id"`
 	UserID              string   `json:"user_id"`
 	InterviewID         string   `json:"interview_id"`
+	PracticeGoalID      string   `json:"practice_goal_id,omitempty"`
 	TurnIndex           int      `json:"turn_index"`
 	Role                string   `json:"role,omitempty"`
 	TurnType            string   `json:"turn_type,omitempty"`

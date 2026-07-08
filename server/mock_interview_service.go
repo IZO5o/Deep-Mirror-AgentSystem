@@ -106,7 +106,9 @@ type mockPracticeUpdate struct {
 }
 
 type mockInput struct {
+	sourceType    string
 	session       InterviewSession
+	practiceGoal  *PracticeGoal
 	report        InterviewReviewReport
 	questions     []InterviewQuestion
 	selection     MemorySelectionResult
@@ -303,6 +305,110 @@ func (s *Server) StartMockInterview(ctx context.Context, interviewID string, req
 	return toMockInterviewVO(mock), nil
 }
 
+func (s *Server) StartPracticeGoalMockInterview(ctx context.Context, goalID string, req vo.StartPracticeGoalMockReq) (vo.MockInterviewVO, error) {
+	if s.agents == nil {
+		return vo.MockInterviewVO{}, fmt.Errorf("agent provider is nil")
+	}
+	req.UserID = strings.TrimSpace(req.UserID)
+
+	input, err := s.loadPracticeGoalMockInput(goalID, req.UserID, req.PlanID, req.TargetRound, req.FocusTopic)
+	if err != nil {
+		return vo.MockInterviewVO{}, err
+	}
+	goal := *input.practiceGoal
+	if strings.TrimSpace(req.TargetRound) == "" {
+		req.TargetRound = goal.TargetRound
+	}
+	if strings.TrimSpace(req.TargetRound) == "" {
+		req.TargetRound = "second_round"
+	}
+	if active, ok, err := s.findActivePracticeGoalMockInterview(goal.GoalID, req.UserID, req.PlanID, req.TargetRound); err != nil {
+		return vo.MockInterviewVO{}, err
+	} else if ok {
+		return toMockInterviewVO(active), nil
+	}
+
+	_, runner, err := s.agents.Get(string(agent.AgentTypeMockInterviewer))
+	if err != nil {
+		return vo.MockInterviewVO{}, err
+	}
+	startReq := vo.StartMockInterviewReq{UserID: req.UserID, PlanID: req.PlanID, TargetRound: req.TargetRound}
+	prompt := buildMockStartPrompt(input, startReq)
+	result, err := runner.RunTask(ctx, prompt)
+	now := time.Now().Unix()
+	if err != nil {
+		return vo.MockInterviewVO{}, fmt.Errorf("mock interviewer start failed: %w", err)
+	}
+	parsed, err := parseMockStartOutput(result.Response)
+	if err != nil {
+		return vo.MockInterviewVO{}, err
+	}
+
+	mock := MockInterview{
+		MockID:         uuid.New().String(),
+		UserID:         req.UserID,
+		InterviewID:    "",
+		PracticeGoalID: goal.GoalID,
+		PlanID:         req.PlanID,
+		TargetRound:    req.TargetRound,
+		Status:         MockInterviewStatusWaitingAnswer,
+		CurrentTurn:    0,
+		CurrentTopic:   "opening",
+		OverallGoal:    parsed.OverallGoal,
+		FirstQuestion:  parsed.FirstQuestion,
+		RawAgentOutput: result.Response,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	openingTurn := MockTurn{
+		TurnID:              uuid.New().String(),
+		MockID:              mock.MockID,
+		UserID:              mock.UserID,
+		InterviewID:         "",
+		PracticeGoalID:      goal.GoalID,
+		TurnIndex:           1,
+		Role:                mockTurnRoleAssistant,
+		TurnType:            mockTurnTypeOpeningQuestion,
+		Phase:               MockInterviewStatusWaitingAnswer,
+		AgentAction:         mockNextActionWaitForInput,
+		Content:             parsed.FirstQuestion,
+		InterviewerQuestion: parsed.FirstQuestion,
+		NextQuestion:        parsed.FirstQuestion,
+		RawAgentOutput:      result.Response,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&mock).Error; err != nil {
+			return err
+		}
+		return tx.Create(&openingTurn).Error
+	}); err != nil {
+		return vo.MockInterviewVO{}, err
+	}
+	s.recordAgentDecisionTrace(AgentDecisionTraceInput{
+		UserID:                  goal.UserID,
+		AgentType:               string(agent.AgentTypeMockInterviewer),
+		SourceType:              AgentTraceSourceMockInterview,
+		SourceID:                mock.MockID,
+		StepName:                AgentTraceStepMockStart,
+		SelectedContextSnapshot: buildSelectedContextTraceSnapshot(input.selection),
+		InputSnapshot: marshalTraceJSON(map[string]any{
+			"practice_goal_id": goal.GoalID,
+			"user_id":          req.UserID,
+			"plan_id":          req.PlanID,
+			"target_round":     req.TargetRound,
+			"source_type":      CoachingPlanSourcePracticeGoal,
+			"prompt_length":    len(prompt),
+		}),
+		RawAgentOutput: result.Response,
+		ParsedDecision: marshalTraceJSON(parsed),
+		ServiceActions: marshalTraceJSON([]string{"created practice_goal mock_interview", "created opening mock_turn"}),
+		Status:         AgentDecisionTraceStatusSucceeded,
+	})
+	return toMockInterviewVO(mock), nil
+}
+
 func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.SubmitMockTurnReq) (vo.MockTurnVO, error) {
 	if s.agents == nil {
 		return vo.MockTurnVO{}, fmt.Errorf("agent provider is nil")
@@ -320,7 +426,12 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 	if err != nil {
 		return vo.MockTurnVO{}, err
 	}
-	input, err := s.loadMockInput(mock.InterviewID, mock.UserID, mock.PlanID, mock.TargetRound, MemorySelectorTaskMockTurn)
+	var input mockInput
+	if mock.PracticeGoalID != "" {
+		input, err = s.loadPracticeGoalMockInput(mock.PracticeGoalID, mock.UserID, mock.PlanID, mock.TargetRound, MemorySelectorTaskMockTurn)
+	} else {
+		input, err = s.loadMockInput(mock.InterviewID, mock.UserID, mock.PlanID, mock.TargetRound, MemorySelectorTaskMockTurn)
+	}
 	if err != nil {
 		return vo.MockTurnVO{}, err
 	}
@@ -440,6 +551,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 		MockID:              mock.MockID,
 		UserID:              mock.UserID,
 		InterviewID:         mock.InterviewID,
+		PracticeGoalID:      mock.PracticeGoalID,
 		TurnIndex:           nextIndex,
 		Role:                mockTurnRoleUser,
 		TurnType:            userTurnType,
@@ -466,6 +578,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			MockID:         mock.MockID,
 			UserID:         mock.UserID,
 			InterviewID:    mock.InterviewID,
+			PracticeGoalID: mock.PracticeGoalID,
 			TurnIndex:      nextIndex,
 			Role:           mockTurnRoleAssistant,
 			TurnType:       mockTurnTypeCancellationSummary,
@@ -490,6 +603,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			MockID:              mock.MockID,
 			UserID:              mock.UserID,
 			InterviewID:         mock.InterviewID,
+			PracticeGoalID:      mock.PracticeGoalID,
 			TurnIndex:           nextIndex,
 			Role:                mockTurnRoleAssistant,
 			TurnType:            assistantType,
@@ -512,6 +626,7 @@ func (s *Server) SubmitMockTurn(ctx context.Context, mockID string, req vo.Submi
 			MockID:              mock.MockID,
 			UserID:              mock.UserID,
 			InterviewID:         mock.InterviewID,
+			PracticeGoalID:      mock.PracticeGoalID,
 			TurnIndex:           nextIndex,
 			Role:                mockTurnRoleAssistant,
 			TurnType:            mockTurnTypeEvaluationFeedback,
@@ -681,6 +796,7 @@ func buildMockActionTurn(mock MockInterview, turnIndex int, parsed mockTurnOutpu
 		MockID:              mock.MockID,
 		UserID:              mock.UserID,
 		InterviewID:         mock.InterviewID,
+		PracticeGoalID:      mock.PracticeGoalID,
 		TurnIndex:           turnIndex,
 		Role:                mockTurnRoleAssistant,
 		Phase:               MockInterviewStatusWaitingAnswer,
@@ -722,6 +838,7 @@ func buildMockOffRecordTurn(mock MockInterview, turnIndex int, parsed mockTurnOu
 		MockID:              mock.MockID,
 		UserID:              mock.UserID,
 		InterviewID:         mock.InterviewID,
+		PracticeGoalID:      mock.PracticeGoalID,
 		TurnIndex:           turnIndex,
 		Role:                mockTurnRoleAssistant,
 		TurnType:            turnType,
@@ -767,6 +884,7 @@ func (s *Server) failMockTurn(mock MockInterview, existingTurnCount int, current
 		MockID:              mock.MockID,
 		UserID:              mock.UserID,
 		InterviewID:         mock.InterviewID,
+		PracticeGoalID:      mock.PracticeGoalID,
 		TurnIndex:           existingTurnCount + 1,
 		Role:                mockTurnRoleUser,
 		TurnType:            mockTurnTypeUserAnswer,
@@ -783,6 +901,7 @@ func (s *Server) failMockTurn(mock MockInterview, existingTurnCount int, current
 		MockID:         mock.MockID,
 		UserID:         mock.UserID,
 		InterviewID:    mock.InterviewID,
+		PracticeGoalID: mock.PracticeGoalID,
 		TurnIndex:      existingTurnCount + 2,
 		Role:           mockTurnRoleSystem,
 		TurnType:       mockTurnTypeError,
@@ -841,18 +960,19 @@ func (s *Server) CancelMockInterview(mockID string) (vo.MockInterviewVO, error) 
 	}
 	now := time.Now().Unix()
 	cancelTurn := MockTurn{
-		TurnID:      uuid.New().String(),
-		MockID:      mock.MockID,
-		UserID:      mock.UserID,
-		InterviewID: mock.InterviewID,
-		TurnIndex:   s.nextMockTurnIndex(mockID),
-		Role:        mockTurnRoleSystem,
-		TurnType:    mockTurnTypeCancellationSummary,
-		Phase:       MockInterviewStatusCancelled,
-		AgentAction: mockInputTypeCancel,
-		Content:     "Mock interview cancelled.",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		TurnID:         uuid.New().String(),
+		MockID:         mock.MockID,
+		UserID:         mock.UserID,
+		InterviewID:    mock.InterviewID,
+		PracticeGoalID: mock.PracticeGoalID,
+		TurnIndex:      s.nextMockTurnIndex(mockID),
+		Role:           mockTurnRoleSystem,
+		TurnType:       mockTurnTypeCancellationSummary,
+		Phase:          MockInterviewStatusCancelled,
+		AgentAction:    mockInputTypeCancel,
+		Content:        "Mock interview cancelled.",
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&cancelTurn).Error; err != nil {
@@ -930,6 +1050,7 @@ func (s *Server) CompleteMockInterview(ctx context.Context, mockID string) (vo.M
 		MockID:         mock.MockID,
 		UserID:         mock.UserID,
 		InterviewID:    mock.InterviewID,
+		PracticeGoalID: mock.PracticeGoalID,
 		TurnIndex:      len(turns) + 1,
 		Role:           mockTurnRoleAssistant,
 		TurnType:       mockTurnTypeClosingSummary,
@@ -1008,9 +1129,66 @@ func (s *Server) loadMockInput(interviewID string, userID string, planID string,
 	}
 
 	return mockInput{
+		sourceType:    CoachingPlanSourceInterview,
 		session:       session,
 		report:        report,
 		questions:     questions,
+		selection:     selection,
+		coachingPlan:  plan,
+		coachingTasks: tasks,
+	}, nil
+}
+
+func (s *Server) loadPracticeGoalMockInput(goalID string, userID string, planID string, targetRound string, currentTask string) (mockInput, error) {
+	goal, err := firstPracticeGoalByID(s.db, goalID)
+	if err != nil {
+		return mockInput{}, err
+	}
+	if goal.UserID != strings.TrimSpace(userID) {
+		return mockInput{}, fmt.Errorf("practice goal user_id mismatch")
+	}
+	if goal.Status != PracticeGoalStatusActive {
+		return mockInput{}, fmt.Errorf("practice goal status must be %q", PracticeGoalStatusActive)
+	}
+	targetRound = normalizeDefault(strings.TrimSpace(targetRound), goal.TargetRound)
+	selectionTask := strings.TrimSpace(currentTask)
+	if selectionTask == "" {
+		selectionTask = strings.Join(unmarshalStringSlice(goal.FocusTopics), " ")
+	}
+	selection, err := s.SelectMemoriesForMock(MemorySelectionRequest{
+		UserID:              goal.UserID,
+		CompanyName:         goal.CompanyName,
+		JobTitle:            goal.JobTitle,
+		TargetRound:         targetRound,
+		CurrentTask:         selectionTask,
+		LimitMemoryItems:    defaultMemorySelectionLimit,
+		LimitPracticeStates: defaultPracticeStateSelectionLimit,
+	})
+	if err != nil {
+		return mockInput{}, err
+	}
+
+	var plan *CoachingPlan
+	var tasks []CoachingTask
+	if planID != "" {
+		var loadedPlan CoachingPlan
+		if err := s.db.First(&loadedPlan, "plan_id = ?", planID).Error; err != nil {
+			return mockInput{}, err
+		}
+		if loadedPlan.PracticeGoalID != goal.GoalID || loadedPlan.UserID != goal.UserID {
+			return mockInput{}, fmt.Errorf("coaching plan does not belong to practice goal")
+		}
+		plan = &loadedPlan
+		if err := s.db.Where("plan_id = ?", planID).
+			Order("sequence asc").
+			Find(&tasks).Error; err != nil {
+			return mockInput{}, err
+		}
+	}
+
+	return mockInput{
+		sourceType:    CoachingPlanSourcePracticeGoal,
+		practiceGoal:  &goal,
 		selection:     selection,
 		coachingPlan:  plan,
 		coachingTasks: tasks,
@@ -1031,6 +1209,25 @@ func (s *Server) findActiveMockInterview(interviewID string, userID string, plan
 	var mock MockInterview
 	q := s.db.Where("interview_id = ? AND user_id = ? AND target_round = ? AND status IN ?",
 		interviewID, userID, targetRound, activeMockStatuses())
+	if planID == "" {
+		q = q.Where("plan_id = ''")
+	} else {
+		q = q.Where("plan_id = ?", planID)
+	}
+	err := q.Order("updated_at desc").First(&mock).Error
+	if err == nil {
+		return mock, true, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return MockInterview{}, false, nil
+	}
+	return MockInterview{}, false, err
+}
+
+func (s *Server) findActivePracticeGoalMockInterview(goalID string, userID string, planID string, targetRound string) (MockInterview, bool, error) {
+	var mock MockInterview
+	q := s.db.Where("practice_goal_id = ? AND user_id = ? AND target_round = ? AND status IN ?",
+		goalID, userID, targetRound, activeMockStatuses())
 	if planID == "" {
 		q = q.Where("plan_id = ''")
 	} else {
@@ -1121,7 +1318,7 @@ JSON schema:
   "first_question": "string"
 }
 
-Interview context:
+Source context:
 %s
 
 Review report:
@@ -1140,7 +1337,7 @@ Coaching plan and tasks:
 %s
 
 Target round: %s`,
-		mockSessionJSON(input.session),
+		mockSourceContextJSON(input),
 		mockReportJSON(input.report),
 		mockQuestionsJSON(input.questions),
 		selectedMemoriesJSON(input.selection.MemoryItems),
@@ -1190,7 +1387,7 @@ func buildMockTurnPrompt(input mockInput, mock MockInterview, turns []MockTurn, 
 Mock interview:
 %s
 
-Context:
+Source context:
 %s
 
 Review report:
@@ -1218,7 +1415,7 @@ Candidate answer:
 %s`,
 		submitMode,
 		mockInterviewJSON(mock),
-		mockSessionJSON(input.session),
+		mockSourceContextJSON(input),
 		mockReportJSON(input.report),
 		mockQuestionsJSON(input.questions),
 		selectedMemoriesJSON(input.selection.MemoryItems),
@@ -1527,6 +1724,28 @@ func mockSessionJSON(session InterviewSession) string {
 	return string(data)
 }
 
+func mockSourceContextJSON(input mockInput) string {
+	if input.practiceGoal != nil {
+		return mockPracticeGoalJSON(*input.practiceGoal)
+	}
+	return mockSessionJSON(input.session)
+}
+
+func mockPracticeGoalJSON(goal PracticeGoal) string {
+	data, _ := json.Marshal(map[string]any{
+		"source_type":      CoachingPlanSourcePracticeGoal,
+		"user_id":          goal.UserID,
+		"practice_goal_id": goal.GoalID,
+		"company_name":     goal.CompanyName,
+		"job_title":        goal.JobTitle,
+		"target_round":     goal.TargetRound,
+		"remaining_days":   goal.RemainingDays,
+		"job_description":  goal.JobDescription,
+		"focus_topics":     unmarshalStringSlice(goal.FocusTopics),
+	})
+	return string(data)
+}
+
 func mockReportJSON(report InterviewReviewReport) string {
 	data, _ := json.Marshal(map[string]any{
 		"overall_summary":       report.OverallSummary,
@@ -1600,14 +1819,16 @@ func mockCoachingJSON(plan *CoachingPlan, tasks []CoachingTask) string {
 
 func mockInterviewJSON(mock MockInterview) string {
 	data, _ := json.Marshal(map[string]any{
-		"mock_id":        mock.MockID,
-		"target_round":   mock.TargetRound,
-		"status":         mock.Status,
-		"overall_goal":   mock.OverallGoal,
-		"first_question": mock.FirstQuestion,
-		"current_turn":   mock.CurrentTurn,
-		"current_topic":  mock.CurrentTopic,
-		"last_feedback":  mock.LastFeedback,
+		"mock_id":          mock.MockID,
+		"interview_id":     mock.InterviewID,
+		"practice_goal_id": mock.PracticeGoalID,
+		"target_round":     mock.TargetRound,
+		"status":           mock.Status,
+		"overall_goal":     mock.OverallGoal,
+		"first_question":   mock.FirstQuestion,
+		"current_turn":     mock.CurrentTurn,
+		"current_topic":    mock.CurrentTopic,
+		"last_feedback":    mock.LastFeedback,
 	})
 	return string(data)
 }
@@ -1659,6 +1880,7 @@ func toMockInterviewVO(mock MockInterview) vo.MockInterviewVO {
 		MockID:               mock.MockID,
 		UserID:               mock.UserID,
 		InterviewID:          mock.InterviewID,
+		PracticeGoalID:       mock.PracticeGoalID,
 		PlanID:               mock.PlanID,
 		TargetRound:          mock.TargetRound,
 		Status:               mock.Status,
@@ -1682,6 +1904,7 @@ func toMockTurnVO(turn MockTurn) vo.MockTurnVO {
 		MockID:              turn.MockID,
 		UserID:              turn.UserID,
 		InterviewID:         turn.InterviewID,
+		PracticeGoalID:      turn.PracticeGoalID,
 		TurnIndex:           turn.TurnIndex,
 		Role:                turn.Role,
 		TurnType:            turn.TurnType,

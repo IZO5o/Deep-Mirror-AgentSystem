@@ -70,6 +70,27 @@ export const api = {
   listMemoryItems(userId) {
     return apiRequest(`/api/memory-items${buildQuery({ user_id: userId })}`)
   },
+  createPracticeGoal(body) {
+    return apiRequest('/api/practice-goals', { method: 'POST', body })
+  },
+  listPracticeGoals(filters) {
+    return apiRequest(`/api/practice-goals${buildQuery(filters)}`)
+  },
+  getPracticeGoal(goalId) {
+    return apiRequest(`/api/practice-goals/${goalId}`)
+  },
+  updatePracticeGoal(goalId, body) {
+    return apiRequest(`/api/practice-goals/${goalId}`, { method: 'PATCH', body })
+  },
+  archivePracticeGoal(goalId) {
+    return apiRequest(`/api/practice-goals/${goalId}/archive`, { method: 'POST' })
+  },
+  generatePracticeGoalCoachingPlan(goalId, body) {
+    return apiRequest(`/api/practice-goals/${goalId}/coaching-plan`, { method: 'POST', body })
+  },
+  startPracticeGoalMock(goalId, body) {
+    return apiRequest(`/api/practice-goals/${goalId}/mock`, { method: 'POST', body })
+  },
   generateCoachingPlan(interviewId, body) {
     return apiRequest(`/api/interviews/${interviewId}/coaching-plan`, { method: 'POST', body })
   },

@@ -110,6 +110,69 @@ func TestStartMockInterviewRequiresReviewedInterview(t *testing.T) {
 	}
 }
 
+func TestStartPracticeGoalMockWithoutInterview(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	goal, err := s.CreatePracticeGoal(vo.CreatePracticeGoalReq{
+		UserID:         "user_001",
+		CompanyName:    "ByteDance",
+		JobTitle:       "Backend Engineer",
+		TargetRound:    "hr_round",
+		JobDescription: "负责高并发推荐系统",
+		FocusTopics:    []string{"缓存一致性", "Redlock 争议点"},
+		RemainingDays:  3,
+	})
+	if err != nil {
+		t.Fatalf("CreatePracticeGoal() error = %v", err)
+	}
+	runners[agent.AgentTypeSecondRoundCoach].taskResponse = sampleSingleTaskCoachingPlanJSON("goal mock strategy")
+	plan, err := s.GeneratePracticeGoalCoachingPlan(context.Background(), goal.GoalID, vo.GeneratePracticeGoalCoachingPlanReq{UserID: "user_001"})
+	if err != nil {
+		t.Fatalf("GeneratePracticeGoalCoachingPlan() error = %v", err)
+	}
+	runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+		sampleMockStartJSON(),
+		sampleMockTurnJSON("继续追问缓存一致性。", 78),
+	}
+
+	mock, err := s.StartPracticeGoalMockInterview(context.Background(), goal.GoalID, vo.StartPracticeGoalMockReq{
+		UserID:     "user_001",
+		PlanID:     plan.PlanID,
+		FocusTopic: "缓存一致性",
+	})
+	if err != nil {
+		t.Fatalf("StartPracticeGoalMockInterview() error = %v", err)
+	}
+	if mock.InterviewID != "" || mock.PracticeGoalID != goal.GoalID {
+		t.Fatalf("mock source fields = %#v, want practice_goal_id without interview_id", mock)
+	}
+	if mock.TargetRound != "hr_round" {
+		t.Fatalf("target_round = %q, want goal target round", mock.TargetRound)
+	}
+	turns, err := s.ListMockTurns(mock.MockID)
+	if err != nil {
+		t.Fatalf("ListMockTurns() error = %v", err)
+	}
+	if len(turns) != 1 || turns[0].PracticeGoalID != goal.GoalID || turns[0].InterviewID != "" {
+		t.Fatalf("opening turns = %#v, want practice goal source", turns)
+	}
+	for _, want := range []string{"practice_goal", "负责高并发推荐系统", "Redlock 争议点"} {
+		if !strings.Contains(runners[agent.AgentTypeMockInterviewer].taskQueries[0], want) {
+			t.Fatalf("mock start prompt missing %q:\n%s", want, runners[agent.AgentTypeMockInterviewer].taskQueries[0])
+		}
+	}
+
+	turn, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{
+		Answer:     "我会从缓存更新顺序、失败补偿和一致性边界回答。",
+		SubmitMode: mockSubmitModeFormalAnswer,
+	})
+	if err != nil {
+		t.Fatalf("SubmitMockTurn() error = %v", err)
+	}
+	if turn.PracticeGoalID != goal.GoalID || turn.InterviewID != "" {
+		t.Fatalf("turn source fields = %#v, want practice goal source", turn)
+	}
+}
+
 func TestStartMockInterviewRejectsWrongPlan(t *testing.T) {
 	s, runners := newTestServerWithFakeAgents(t)
 	session, _ := createMockReadyInterview(t, s, runners)
