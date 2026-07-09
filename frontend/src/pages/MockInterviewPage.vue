@@ -85,6 +85,7 @@
           <div class="secondary-actions compact-actions">
             <button class="secondary" type="button" :disabled="!canControlMock || isLoading('completeMockInterview')" @click="completeMock">完成</button>
             <button class="danger" type="button" :disabled="!canControlMock || isLoading('cancelMockInterview')" @click="cancelMock">取消</button>
+            <button class="secondary" type="button" v-if="canResumeMock" :disabled="isLoading('resumeMockInterview')" @click="resumeFailedMock">重试上一轮</button>
           </div>
           <dl class="field-stack">
             <div class="field-row">
@@ -215,6 +216,7 @@ const currentQuestion = computed(() => {
 const canControlMock = computed(() => Boolean(mock.value?.mock_id && !terminalStatuses.has(normalizeStatus(mock.value.status))))
 const canAnswerMock = computed(() => Boolean(mock.value?.mock_id && !terminalStatuses.has(normalizeStatus(mock.value.status))))
 const canSubmitTurn = computed(() => Boolean(canAnswerMock.value && answerInput.value.trim()))
+const canResumeMock = computed(() => ['failed', 'retriable_failed'].includes(normalizeStatus(mock.value?.status)))
 const latestTimedQuestionTurn = computed(() => {
   const reversed = [...turns.value].reverse()
   return reversed.find((turn) => {
@@ -488,6 +490,18 @@ async function cancelMock() {
   const loaded = await runWithStatus('cancelMockInterview', () => api.cancelMockInterview(mock.value.mock_id), 'Mock interview cancelled')
   syncMock(loaded)
   await refreshTurns()
+}
+
+async function resumeFailedMock() {
+  if (!selectedMockId.value) return
+  const loaded = await runWithStatus(
+    'resumeMockInterview',
+    () => api.resumeMockInterview(selectedMockId.value),
+    'Mock interview resumed',
+  )
+  syncMock(loaded)
+  await refreshTurns()
+  await loadPracticeStates()
 }
 
 async function loadPracticeStates() {
