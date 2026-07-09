@@ -56,6 +56,8 @@ const (
 	mockSubmitModeChat         = "chat"
 	mockSubmitModeFormalAnswer = "formal_answer"
 
+	mockTurnTriggerSilenceTimeout = "silence_timeout"
+
 	mockUserIntentAnswer     = "answer"
 	mockUserIntentAskHint    = "ask_hint"
 	mockUserIntentAskExplain = "ask_explain"
@@ -70,8 +72,11 @@ const (
 )
 
 type mockStartOutput struct {
-	OverallGoal   string `json:"overall_goal"`
-	FirstQuestion string `json:"first_question"`
+	OverallGoal       string `json:"overall_goal"`
+	FirstQuestion     string `json:"first_question"`
+	TimeLimitSeconds  int    `json:"time_limit_seconds"`
+	TimePressureStyle string `json:"time_pressure_style"`
+	WarnAtSeconds     int    `json:"warn_at_seconds"`
 }
 
 type mockTurnOutput struct {
@@ -115,6 +120,7 @@ type mockInput struct {
 	report        InterviewReviewReport
 	questions     []InterviewQuestion
 	selection     MemorySelectionResult
+	questionBank  []QuestionBankQuestion
 	coachingPlan  *CoachingPlan
 	coachingTasks []CoachingTask
 }
@@ -133,7 +139,7 @@ func (s *Server) StartMockInterview(ctx context.Context, interviewID string, req
 		return toMockInterviewVO(active), nil
 	}
 
-	input, err := s.loadMockInput(interviewID, req.UserID, req.PlanID, req.TargetRound, MemorySelectorTaskMockStart)
+	input, err := s.loadMockInput(interviewID, req.UserID, req.PlanID, req.TargetRound, normalizeDefault(req.FocusTopic, MemorySelectorTaskMockStart))
 	if err != nil {
 		return vo.MockInterviewVO{}, err
 	}
@@ -264,6 +270,9 @@ func (s *Server) StartMockInterview(ctx context.Context, interviewID string, req
 		Content:             parsed.FirstQuestion,
 		InterviewerQuestion: parsed.FirstQuestion,
 		NextQuestion:        parsed.FirstQuestion,
+		TimeLimitSeconds:    parsed.TimeLimitSeconds,
+		TimePressureStyle:   parsed.TimePressureStyle,
+		WarnAtSeconds:       parsed.WarnAtSeconds,
 		RawAgentOutput:      result.Response,
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -335,7 +344,7 @@ func (s *Server) StartPracticeGoalMockInterview(ctx context.Context, goalID stri
 	if err != nil {
 		return vo.MockInterviewVO{}, err
 	}
-	startReq := vo.StartMockInterviewReq{UserID: req.UserID, PlanID: req.PlanID, TargetRound: req.TargetRound}
+	startReq := vo.StartMockInterviewReq{UserID: req.UserID, PlanID: req.PlanID, TargetRound: req.TargetRound, FocusTopic: req.FocusTopic}
 	prompt := buildMockStartPrompt(input, startReq)
 	result, err := runner.RunTask(ctx, prompt)
 	now := time.Now().Unix()
@@ -377,6 +386,9 @@ func (s *Server) StartPracticeGoalMockInterview(ctx context.Context, goalID stri
 		Content:             parsed.FirstQuestion,
 		InterviewerQuestion: parsed.FirstQuestion,
 		NextQuestion:        parsed.FirstQuestion,
+		TimeLimitSeconds:    parsed.TimeLimitSeconds,
+		TimePressureStyle:   parsed.TimePressureStyle,
+		WarnAtSeconds:       parsed.WarnAtSeconds,
 		RawAgentOutput:      result.Response,
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -443,13 +455,20 @@ func (s *Server) submitMockTurnInternal(ctx context.Context, mockID string, req 
 		return vo.MockTurnVO{}, err
 	}
 	answer := strings.TrimSpace(req.Answer)
+	isSilenceTimeout := strings.TrimSpace(req.Trigger) == mockTurnTriggerSilenceTimeout
 	if existingUserTurn != nil {
 		answer = existingUserTurn.UserAnswer
 		if strings.TrimSpace(answer) == "" {
 			answer = existingUserTurn.Content
 		}
-	} else if answer == "" {
-		return vo.MockTurnVO{}, fmt.Errorf("answer is required")
+	} else {
+		if answer == "" && !isSilenceTimeout {
+			return vo.MockTurnVO{}, fmt.Errorf("answer is required")
+		}
+		if isSilenceTimeout {
+			req.SubmitMode = mockSubmitModeChat
+			answer = "（候选人超过提醒时间未输入，前端触发静默 check-in）"
+		}
 	}
 	var input mockInput
 	if mock.PracticeGoalID != "" {
@@ -469,11 +488,12 @@ func (s *Server) submitMockTurnInternal(ctx context.Context, mockID string, req 
 		return vo.MockTurnVO{}, err
 	}
 
-	staticContext := buildMockTurnInstructionContext() + "\n\n" + buildMockTurnStaticContext(input, mock, currentQuestion)
+	timerResult := checkMockTimer(mock, turns, time.Now())
+	staticContext := buildMockTurnInstructionContext() + "\n\n" + buildMockTurnStaticContext(input, mock, currentQuestion, timerResult)
 	historyTurns := mockHistoryTurnsForPrompt(turns, existingUserTurn)
 	historyMessages := projectMockTurnsToMessages(historyTurns)
 	compression := compressBusinessHistoryForPrompt(historyMessages, BusinessHistoryCompressionConfig{})
-	userMessage := buildMockTurnUserMessage(answer, submitMode, currentQuestion)
+	userMessage := buildMockTurnUserMessage(answer, submitMode, currentQuestion, strings.TrimSpace(req.Trigger))
 	inputSnapshot := marshalTraceJSON(map[string]any{
 		"mock_id":                   mock.MockID,
 		"interview_id":              mock.InterviewID,
@@ -489,6 +509,7 @@ func (s *Server) submitMockTurnInternal(ctx context.Context, mockID string, req 
 		"compressed_message_count":  compression.CompressedMessageCount,
 		"history_summary_generated": compression.SummaryGenerated,
 		"history_truncated":         compression.Truncated,
+		"trigger":                   strings.TrimSpace(req.Trigger),
 		"current_question_length":   len(currentQuestion),
 		"answer_length":             len(answer),
 		"question_count":            len(input.questions),
@@ -1241,6 +1262,10 @@ func (s *Server) loadMockInput(interviewID string, userID string, planID string,
 	if err != nil {
 		return mockInput{}, err
 	}
+	questionBankResults, err := SearchQuestions(currentTask, "", session.CompanyName, 3)
+	if err != nil {
+		questionBankResults = nil
+	}
 
 	var plan *CoachingPlan
 	var tasks []CoachingTask
@@ -1266,6 +1291,7 @@ func (s *Server) loadMockInput(interviewID string, userID string, planID string,
 		report:        report,
 		questions:     questions,
 		selection:     selection,
+		questionBank:  questionBankResults,
 		coachingPlan:  plan,
 		coachingTasks: tasks,
 	}, nil
@@ -1286,6 +1312,10 @@ func (s *Server) loadPracticeGoalMockInput(goalID string, userID string, planID 
 	selectionTask := strings.TrimSpace(currentTask)
 	if selectionTask == "" {
 		selectionTask = strings.Join(unmarshalStringSlice(goal.FocusTopics), " ")
+	}
+	questionBankResults, err := SearchQuestions(selectionTask, "", goal.CompanyName, 3)
+	if err != nil {
+		questionBankResults = nil
 	}
 	selection, err := s.SelectMemoriesForMock(MemorySelectionRequest{
 		UserID:              goal.UserID,
@@ -1322,6 +1352,7 @@ func (s *Server) loadPracticeGoalMockInput(goalID string, userID string, planID 
 		sourceType:    CoachingPlanSourcePracticeGoal,
 		practiceGoal:  &goal,
 		selection:     selection,
+		questionBank:  questionBankResults,
 		coachingPlan:  plan,
 		coachingTasks: tasks,
 	}, nil
@@ -1448,7 +1479,10 @@ Act as the interviewer and produce the simulation goal plus the first question.
 JSON schema:
 {
   "overall_goal": "string",
-  "first_question": "string"
+  "first_question": "string",
+  "time_limit_seconds": 900,
+  "time_pressure_style": "none|moderate|strict",
+  "warn_at_seconds": 300
 }
 
 Source context:
@@ -1466,6 +1500,9 @@ Selected memory_items:
 Selected practice_states:
 %s
 
+Question bank candidates:
+%s
+
 Coaching plan and tasks:
 %s
 
@@ -1475,6 +1512,7 @@ Target round: %s`,
 		mockQuestionsJSON(input.questions),
 		selectedMemoriesJSON(input.selection.MemoryItems),
 		selectedPracticeStatesJSON(input.selection.PracticeStates),
+		formatQuestionBankPromptSection(input.questionBank),
 		mockCoachingJSON(input.coachingPlan, input.coachingTasks),
 		req.TargetRound,
 	)
@@ -2089,6 +2127,9 @@ func toMockTurnVO(turn MockTurn) vo.MockTurnVO {
 		Feedback:            turn.Feedback,
 		Score:               turn.Score,
 		FollowUpReason:      turn.FollowUpReason,
+		TimeLimitSeconds:    turn.TimeLimitSeconds,
+		TimePressureStyle:   turn.TimePressureStyle,
+		WarnAtSeconds:       turn.WarnAtSeconds,
 		TopicTags:           unmarshalStringSlice(turn.TopicTags),
 		NextQuestion:        turn.NextQuestion,
 		RawAgentOutput:      turn.RawAgentOutput,

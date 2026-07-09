@@ -6,6 +6,7 @@ const storageKeys = {
   selectedPlanId: 'workbench.plan_id',
   selectedSessionId: 'workbench.session_id',
   selectedMockId: 'workbench.mock_id',
+  focusTopic: 'workbench.focus_topic',
 }
 
 function readStorage(key, fallback = '') {
@@ -18,6 +19,7 @@ export const workbenchState = reactive({
   selectedPlanId: readStorage(storageKeys.selectedPlanId),
   selectedSessionId: readStorage(storageKeys.selectedSessionId),
   selectedMockId: readStorage(storageKeys.selectedMockId),
+  focusTopic: readStorage(storageKeys.focusTopic),
   lastResult: '',
   globalError: '',
   loadingKeys: new Set(),

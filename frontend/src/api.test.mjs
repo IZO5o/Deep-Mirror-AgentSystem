@@ -40,6 +40,16 @@ async function assertPostBody(name, action, expectedPath, body) {
   assertJsonBody(call.init, body)
 }
 
+async function assertRequest(name, action, expectedPath, expectedMethod, body) {
+  installFetch()
+  await action()
+  const call = latestCall()
+  assert.equal(call.path, expectedPath, name)
+  assert.equal(call.init.method, expectedMethod)
+  assertJsonBody(call.init, body)
+  return call
+}
+
 async function main() {
   assert.equal(buildQuery({
     user_id: 'user_001',
@@ -136,6 +146,16 @@ async function main() {
     '/api/mock-interviews/mock_1/turns',
     { answer: 'my answer', submit_mode: 'chat' },
   )
+
+  const controller = new AbortController()
+  const silenceCall = await assertRequest(
+    'submitMockTurn supports silence timeout trigger',
+    () => api.submitMockTurn('mock_1', { answer: '', submit_mode: 'chat', trigger: 'silence_timeout' }, { signal: controller.signal }),
+    '/api/mock-interviews/mock_1/turns',
+    'POST',
+    { answer: '', submit_mode: 'chat', trigger: 'silence_timeout' },
+  )
+  assert.equal(silenceCall.init.signal, controller.signal)
 
   installFetch()
   await api.resumeMockInterview('mock_1')

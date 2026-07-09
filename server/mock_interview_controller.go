@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -34,6 +35,10 @@ func (s *Server) submitMockTurn(c *gin.Context) {
 	var req vo.SubmitMockTurnReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, vo.Err(400, err.Error()))
+		return
+	}
+	if strings.TrimSpace(req.Answer) == "" && strings.TrimSpace(req.Trigger) != mockTurnTriggerSilenceTimeout {
+		c.JSON(http.StatusBadRequest, vo.Err(400, "answer is required"))
 		return
 	}
 

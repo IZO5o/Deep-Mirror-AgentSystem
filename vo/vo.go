@@ -432,6 +432,7 @@ type StartMockInterviewReq struct {
 	UserID      string `json:"user_id" binding:"required"`
 	PlanID      string `json:"plan_id,omitempty"`
 	TargetRound string `json:"target_round"`
+	FocusTopic  string `json:"focus_topic,omitempty"`
 }
 
 type StartPracticeGoalMockReq struct {
@@ -443,8 +444,9 @@ type StartPracticeGoalMockReq struct {
 
 // SubmitMockTurnReq POST /mock-interviews/{id}/turns 请求体
 type SubmitMockTurnReq struct {
-	Answer     string `json:"answer" binding:"required"`
+	Answer     string `json:"answer"`
 	SubmitMode string `json:"submit_mode,omitempty"`
+	Trigger    string `json:"trigger,omitempty"`
 }
 
 // MockInterviewVO 是一次模拟面试会话
@@ -488,6 +490,9 @@ type MockTurnVO struct {
 	Feedback            string   `json:"feedback"`
 	Score               int      `json:"score"`
 	FollowUpReason      string   `json:"follow_up_reason"`
+	TimeLimitSeconds    int      `json:"time_limit_seconds,omitempty"`
+	TimePressureStyle   string   `json:"time_pressure_style,omitempty"`
+	WarnAtSeconds       int      `json:"warn_at_seconds,omitempty"`
 	TopicTags           []string `json:"topic_tags"`
 	NextQuestion        string   `json:"next_question"`
 	RawAgentOutput      string   `json:"raw_agent_output,omitempty"`
