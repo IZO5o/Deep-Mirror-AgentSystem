@@ -57,6 +57,14 @@
         <div class="chat-summary-line">
           <strong>当前训练重点：{{ currentTask?.title || '尚未开始' }}</strong>
           <span>状态：{{ session?.status || '未开始' }}</span>
+          <button
+            v-if="canStartFocusedMock"
+            class="primary"
+            type="button"
+            @click="startFocusedMock"
+          >
+            Mock this topic
+          </button>
         </div>
 
         <div class="long-chat-stream">
@@ -106,6 +114,7 @@
             <button class="secondary" type="button" :disabled="!selectedSessionId || isLoading('getCoachingSession')" @click="refreshSession">刷新会话</button>
             <button class="secondary" type="button" :disabled="!canControlSession || isLoading('pauseCoachingSession')" @click="pauseSession">暂停</button>
             <button class="danger" type="button" :disabled="!canControlSession || isLoading('cancelCoachingSession')" @click="cancelSession">取消</button>
+            <button class="secondary" type="button" v-if="canResumeSession" :disabled="isLoading('resumeCoachingSession')" @click="resumeFailedSession">重试上一轮</button>
           </div>
           <dl class="field-stack">
             <div class="field-row">
@@ -174,7 +183,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { api } from '../api'
 import EmptyState from '../components/EmptyState.vue'
 import ErrorNotice from '../components/ErrorNotice.vue'
@@ -189,6 +198,7 @@ const context = reactive({
   user_id: state.userId || 'user_001',
 })
 
+const router = useRouter()
 const detail = ref(null)
 const plan = ref(null)
 const tasks = ref([])
@@ -255,6 +265,13 @@ const canUseInterview = computed(() => Boolean(context.interview_id && contextUs
 const canControlSession = computed(() => Boolean(selectedSessionId.value && session.value && !terminalStatuses.has(normalizeStatus(session.value.status))))
 const canEditTurn = computed(() => Boolean(selectedSessionId.value && session.value && !terminalStatuses.has(normalizeStatus(session.value.status))))
 const canSubmitTurn = computed(() => Boolean(canEditTurn.value && turnInput.value.trim()))
+const canResumeSession = computed(() => ['failed', 'retriable_failed'].includes(normalizeStatus(session.value?.status)))
+const canStartFocusedMock = computed(() => {
+  const status = normalizeStatus(session.value?.status)
+  const blocked = ['completed', 'cancelled', 'canceled'].includes(status)
+  const interviewId = session.value?.interview_id || selectedInterviewId.value || context.interview_id
+  return Boolean(!blocked && interviewId && (currentTask.value || session.value?.coaching_plan_id || selectedPlanId.value))
+})
 const traceLink = computed(() => ({
   path: '/trace',
   query: {
@@ -369,6 +386,17 @@ async function cancelSession() {
   syncSessionDetail(loaded)
 }
 
+async function resumeFailedSession() {
+  if (!selectedSessionId.value) return
+  const loaded = await runWithStatus(
+    'resumeCoachingSession',
+    () => api.resumeCoachingSession(selectedSessionId.value),
+    'Coaching session resumed',
+  )
+  syncSessionDetail(loaded)
+  await loadPracticeStates()
+}
+
 async function submitWithMode(submitMode) {
   const text = turnInput.value.trim()
   if (!text || !selectedSessionId.value) return
@@ -392,6 +420,16 @@ async function submitFormalTurn() {
 
 function clearTurn() {
   turnInput.value = ''
+}
+
+function startFocusedMock() {
+  const focus = currentTask.value?.title || currentTask.value?.topic || ''
+  const interviewId = session.value?.interview_id || selectedInterviewId.value || context.interview_id
+  const planId = session.value?.coaching_plan_id || selectedPlanId.value
+  if (focus) rememberSelection('focusTopic', focus)
+  if (interviewId) rememberSelection('selectedInterviewId', interviewId)
+  if (planId) rememberSelection('selectedPlanId', planId)
+  router.push('/mock')
 }
 
 async function loadPracticeStates() {

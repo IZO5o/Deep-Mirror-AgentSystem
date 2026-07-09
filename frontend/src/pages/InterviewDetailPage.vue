@@ -115,6 +115,16 @@
       </div>
     </section>
 
+    <section v-if="canOpenCoaching" class="panel">
+      <div class="panel-title">
+        <div>
+          <h2>Next Step</h2>
+          <p>Continue this interview into the coaching workspace with the selected plan context.</p>
+        </div>
+        <button class="primary" type="button" @click="goToCoaching">Open Coaching</button>
+      </div>
+    </section>
+
     <section v-if="detail" class="panel">
       <div class="panel-title">
         <div>
@@ -162,7 +172,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { api } from '../api'
 import EmptyState from '../components/EmptyState.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -172,6 +182,7 @@ const props = defineProps({
   interviewId: { type: String, required: true },
 })
 
+const router = useRouter()
 const detail = ref(null)
 const transcriptContent = ref('')
 const loadError = ref('')
@@ -179,6 +190,7 @@ const loadError = ref('')
 const interview = computed(() => detail.value?.interview || {})
 const questions = computed(() => detail.value?.questions || [])
 const memoryCandidates = computed(() => detail.value?.memory_candidates || [])
+const canOpenCoaching = computed(() => Boolean(detail.value?.coaching_plan?.plan_id))
 
 const ListBlock = defineComponent({
   props: {
@@ -243,6 +255,14 @@ async function saveTranscript() {
 async function review() {
   await runWithStatus('reviewInterview', () => api.triggerReview(props.interviewId), 'Review requested')
   await load()
+}
+
+async function goToCoaching() {
+  rememberSelection('selectedInterviewId', props.interviewId)
+  if (detail.value?.coaching_plan?.plan_id) {
+    rememberSelection('selectedPlanId', detail.value.coaching_plan.plan_id)
+  }
+  await router.push('/coaching')
 }
 
 watch(() => props.interviewId, load)
