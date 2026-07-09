@@ -1,0 +1,504 @@
+{
+  "questions": [
+    {
+      "id": "q_redis_001",
+      "topic": "Redis",
+      "sub_topic": "分布式锁 Redlock",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "美团"],
+      "question": "在分布式系统中使用 Redis 实现分布式锁时，Redlock 的安全性争议主要在哪里？",
+      "expected_points": ["互斥性保障不足", "锁过期时间难以确定", "主从切换导致锁丢失", "时钟漂移问题", "fencing token 机制缺失"],
+      "follow_up_hints": ["如果 Redis 主节点挂了怎么办？", "如何用 fencing token 降低风险？", "Redlock 与 etcd 锁方案对比"]
+    },
+    {
+      "id": "q_redis_002",
+      "topic": "Redis",
+      "sub_topic": "缓存击穿",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "拼多多", "京东"],
+      "question": "如何解决缓存击穿问题？请描述多种方案及其优缺点。",
+      "expected_points": ["互斥锁方案", "热点数据永不过期", "布隆过滤器", "提前预热机制", "层级缓存设计"],
+      "follow_up_hints": ["高并发下互斥锁的性能瓶颈在哪？", "布隆过滤器的误判率怎么控制？", "如何识别哪些是热点 key？"]
+    },
+    {
+      "id": "q_redis_003",
+      "topic": "Redis",
+      "sub_topic": "缓存雪崩",
+      "difficulty": "medium",
+      "company_tags": ["腾讯", "阿里巴巴", "字节跳动"],
+      "question": "缓存雪崩产生的原因是什么？如何预防和快速恢复？",
+      "expected_points": ["大量缓存同时过期", "Redis 宕机", "过期时间加随机值", "多级缓存架构", "限流降级", "持久化快速恢复"],
+      "follow_up_hints": ["缓存过期时间怎么加随机值？", "多级缓存的一致性怎么保证？", "降级策略如何设计？"]
+    },
+    {
+      "id": "q_redis_004",
+      "topic": "Redis",
+      "sub_topic": "缓存一致性",
+      "difficulty": "hard",
+      "company_tags": ["阿里巴巴", "字节跳动", "快手"],
+      "question": "数据库与 Redis 缓存之间如何保证数据一致性？分别说明先更新数据库再删缓存和先删缓存再更新数据库两种方案。",
+      "expected_points": ["先删缓存再更新数据库的并发问题", "先更新数据库再删缓存的方案", "延迟双删策略", "最终一致性 vs 强一致性", "binlog 异步同步方案", "重试补偿机制"],
+      "follow_up_hints": ["延迟双删的延迟时间怎么设置？", "如果删除缓存失败了怎么办？", "canal 方案的工作原理是什么？"]
+    },
+    {
+      "id": "q_redis_005",
+      "topic": "Redis",
+      "sub_topic": "大Key热Key",
+      "difficulty": "hard",
+      "company_tags": ["字节跳动", "美团", "拼多多"],
+      "question": "如何发现和处理 Redis 中的大 Key 和热 Key？",
+      "expected_points": ["bigkey 扫描命令", "hotkey 发现方法", "大 key 拆分策略", "本地缓存缓存热 key", "热 key 分散到多个副本"],
+      "follow_up_hints": ["redis-cli --bigkeys 的原理是什么？", "热 key 打散到多个副本后数据一致性怎么保证？", "大 key 对持久化的影响？"]
+    },
+    {
+      "id": "q_mysql_001",
+      "topic": "MySQL",
+      "sub_topic": "索引失效",
+      "difficulty": "medium",
+      "company_tags": ["腾讯", "字节跳动", "京东"],
+      "question": "MySQL 中哪些情况下会导致索引失效？请列举至少五种场景。",
+      "expected_points": ["最左前缀原则不满足", "隐式类型转换", "索引列上使用函数", "OR 条件未全部索引", "Like 通配符开头", "范围查询后的索引失效"],
+      "follow_up_hints": ["联合索引的 B+Tree 结构是怎样的？", "如何查看 SQL 是否走了索引？", "索引下推怎么优化？"]
+    },
+    {
+      "id": "q_mysql_002",
+      "topic": "MySQL",
+      "sub_topic": "事务隔离级别",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "字节跳动", "腾讯"],
+      "question": "MySQL InnoDB 的四种事务隔离级别分别解决了哪些问题？MVCC 是如何实现的？",
+      "expected_points": ["读未提交", "读已提交", "可重复读", "串行化", "脏读", "不可重复读", "幻读", "MVCC 的 undo log 和 Read View"],
+      "follow_up_hints": ["MySQL 的默认隔离级别是什么？为什么？", "Next-Key Lock 解决了什么问题？", "MVCC 在 RC 和 RR 下的差异？"]
+    },
+    {
+      "id": "q_mysql_003",
+      "topic": "MySQL",
+      "sub_topic": "慢查询治理",
+      "difficulty": "medium",
+      "company_tags": ["美团", "字节跳动", "京东"],
+      "question": "线上 MySQL 出现慢查询时，你的排查和优化步骤是什么？",
+      "expected_points": ["开启慢查询日志", "使用 explain 分析执行计划", "检查索引使用情况", "避免全表扫描", "优化 SQL 写法", "分页优化", "force index 使用"],
+      "follow_up_hints": ["explain 中 type 字段各值的含义？", "Extra 中出现 Using filesort 怎么办？", "深度分页怎么优化？"]
+    },
+    {
+      "id": "q_mysql_004",
+      "topic": "MySQL",
+      "sub_topic": "分库分表",
+      "difficulty": "hard",
+      "company_tags": ["阿里巴巴", "字节跳动", "拼多多", "美团"],
+      "question": "MySQL 分库分表有哪些策略？分库分表后的常见问题如何解决？",
+      "expected_points": ["垂直分库分表", "水平分库分表", "取模分片", "范围分片", "一致性哈希分片", "跨分片查询", "全局 ID 生成", "分布式事务"],
+      "follow_up_hints": ["扩容时如何平滑迁移数据？", "分页和排序在分片后怎么处理？", "ShardingSphere 的原理？"]
+    },
+    {
+      "id": "q_mysql_005",
+      "topic": "MySQL",
+      "sub_topic": "主从复制",
+      "difficulty": "medium",
+      "company_tags": ["腾讯", "京东", "阿里巴巴"],
+      "question": "MySQL 主从复制的原理是什么？主从延迟的原因和解决方案有哪些？",
+      "expected_points": ["binlog 格式", "I/O 线程", "SQL 线程", "异步复制", "半同步复制", "并行复制", "主从延迟原因分析"],
+      "follow_up_hints": ["binlog 三种格式的差异？", "半同步复制怎么配置？", "从库延时过大怎么监控报警？"]
+    },
+    {
+      "id": "q_kafka_001",
+      "topic": "Kafka",
+      "sub_topic": "消息可靠性",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "美团", "快手"],
+      "question": "Kafka 如何保证消息不丢失？分别从生产者、Broker、消费者三个角度说明。",
+      "expected_points": ["生产者 acks 设置", "生产者重试机制", "Broker 副本机制", "ISR 机制", "消费者手动提交 offset"],
+      "follow_up_hints": ["acks=all 的性能影响？", "副本数设置多少合适？", "消费端重复消费怎么处理？"]
+    },
+    {
+      "id": "q_kafka_002",
+      "topic": "Kafka",
+      "sub_topic": "重复消费",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "字节跳动", "京东"],
+      "question": "Kafka 重复消费的原因是什么？如何从业务层面保证消费的幂等性？",
+      "expected_points": ["消费者宕机后 rebalance", "手动提交 offset 失败", "业务幂等表设计", "唯一键去重", "状态机幂等"],
+      "follow_up_hints": ["Kafka 的 exactly-once 语义怎么实现？", "事务消息的适用场景？", "去重表如何设计的？"]
+    },
+    {
+      "id": "q_kafka_003",
+      "topic": "Kafka",
+      "sub_topic": "顺序消息",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "腾讯", "美团"],
+      "question": "Kafka 如何保证消息的顺序消费？在多分区场景下怎么做？",
+      "expected_points": ["单分区保证顺序", "消息 key 路由到同一分区", "生产者端禁止重试乱序", "消费者单线程消费"],
+      "follow_up_hints": ["分区数对顺序性的影响？", "生产端重试导致的乱序怎么解决？", "RocketMQ 的顺序消息实现？"]
+    },
+    {
+      "id": "q_kafka_004",
+      "topic": "Kafka",
+      "sub_topic": "积压治理",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "美团", "拼多多"],
+      "question": "线上 Kafka 消息积压严重时，你如何快速排查和解决？",
+      "expected_points": ["查看消费 lag", "检查消费者性能瓶颈", "增加分区数和消费者数", "限流降级非核心消息", "临时扩容消费能力"],
+      "follow_up_hints": ["Lag 持续增长但消费者正常怎么办？", "怎么定位是生产太快还是消费太慢？", "重平衡导致的停顿怎么避免？"]
+    },
+    {
+      "id": "q_kafka_005",
+      "topic": "Kafka",
+      "sub_topic": "事务消息",
+      "difficulty": "hard",
+      "company_tags": ["阿里巴巴", "字节跳动"],
+      "question": "Kafka 的事务消息机制是如何实现的？适用于什么场景？",
+      "expected_points": ["事务协调器", "事务日志 Topic", "两阶段提交", "事务状态标记", "幂等生产者", "跨系统数据一致性"],
+      "follow_up_hints": ["Kafka 事务的隔离级别是什么？", "事务对性能的影响有多大？", "和 RocketMQ 事务消息对比？"]
+    },
+    {
+      "id": "q_system_001",
+      "topic": "系统设计",
+      "sub_topic": "短链系统",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "腾讯", "美团"],
+      "question": "设计一个短链接生成系统，需要支持海量请求和高可用。",
+      "expected_points": ["发号器方案", "哈希取模方案", "Base62 编码", "重定向 301/302", "过期策略", "防攻击设计"],
+      "follow_up_hints": ["如何保证短链不重复？", "短链的过期时间怎么管理？", "大量无效请求怎么防刷？"]
+    },
+    {
+      "id": "q_system_002",
+      "topic": "系统设计",
+      "sub_topic": "秒杀系统",
+      "difficulty": "hard",
+      "company_tags": ["阿里巴巴", "字节跳动", "京东", "拼多多"],
+      "question": "设计一个高并发秒杀系统，如何保证不超卖且系统不崩溃？",
+      "expected_points": ["前端限流", "CDN 静态化", "Redis 预扣库存", "MQ 削峰填谷", "数据库乐观锁", "限流熔断降级"],
+      "follow_up_hints": ["库存扣减在 Redis 还是在 DB？", "用户重复提交怎么处理？", "热点商品怎么应对？"]
+    },
+    {
+      "id": "q_system_003",
+      "topic": "系统设计",
+      "sub_topic": "Feed流系统",
+      "difficulty": "hard",
+      "company_tags": ["字节跳动", "快手", "小红书"],
+      "question": "设计一个社交平台的 Feed 流系统，支持关注、点赞、评论等功能。",
+      "expected_points": ["推模式", "拉模式", "推拉结合", "Feed 存储设计", "Feed 排序", "冷热数据分离"],
+      "follow_up_hints": ["推模式中的粉丝列表怎么获取？", "大 V 发 Feed 怎么处理？", "时间线排序怎么优化？"]
+    },
+    {
+      "id": "q_system_004",
+      "topic": "系统设计",
+      "sub_topic": "评论系统",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "小红书", "哔哩哔哩"],
+      "question": "设计一个支持大量用户评论的系统，需要支持嵌套回复和点赞排序。",
+      "expected_points": ["两级评论设计", "评论 ID 生成", "热评缓存", "评论计数缓存", "敏感词过滤", "异步写评论"],
+      "follow_up_hints": ["嵌套评论的数据库表如何设计？", "高并发下的评论计数怎么保证准确？", "评论的删除逻辑怎么设计？"]
+    },
+    {
+      "id": "q_system_005",
+      "topic": "系统设计",
+      "sub_topic": "通知系统",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "字节跳动", "美团"],
+      "question": "设计一个支持多渠道、多类型的分布式通知推送系统。",
+      "expected_points": ["通知抽象模型", "用户偏好设置", "通知去重", "渠道优先级", "失败重试机制", "通知频率限制"],
+      "follow_up_hints": ["多渠道通知如何保证不重复发送？", "用户设置了免打扰怎么办？", "推送失败后怎么补偿？"]
+    },
+    {
+      "id": "q_system_006",
+      "topic": "系统设计",
+      "sub_topic": "搜索联想",
+      "difficulty": "medium",
+      "company_tags": ["百度", "字节跳动", "阿里巴巴"],
+      "question": "设计一个搜索引擎的搜索建议系统，当用户输入前缀时实时返回联想词。",
+      "expected_points": ["Trie 树构建", "前缀匹配", "TopK 热门词", "索引更新策略", "客户端去抖", "服务端缓存"],
+      "follow_up_hints": ["Trie 树内存太大怎么办？", "热门词权重怎么动态更新？", "中文分词怎么处理？"]
+    },
+    {
+      "id": "q_system_007",
+      "topic": "系统设计",
+      "sub_topic": "排行榜",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "美团", "快手"],
+      "question": "设计一个实时更新的排行榜系统，支持千万级用户实时排名。",
+      "expected_points": ["Redis Sorted Set", "定期聚合计算", "分桶排名", "近似排名", "按时间段排行榜"],
+      "follow_up_hints": ["Sorted Set 的 skiplist 原理？", "大 V 用户分数突增怎么办？", "怎么实现近似排名的分桶方案？"]
+    },
+    {
+      "id": "q_system_008",
+      "topic": "系统设计",
+      "sub_topic": "网关限流",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "字节跳动", "腾讯"],
+      "question": "设计一个 API 网关的限流系统，支持多种限流策略。",
+      "expected_points": ["固定窗口限流", "滑动窗口限流", "令牌桶算法", "漏桶算法", "Redis 计数器限流", "分级限流策略"],
+      "follow_up_hints": ["滑动窗口怎么用 Redis 实现？", "令牌桶和漏桶的区别？", "分布式限流怎么保证准确性？"]
+    },
+    {
+      "id": "q_system_009",
+      "topic": "系统设计",
+      "sub_topic": "文件上传",
+      "difficulty": "easy",
+      "company_tags": ["字节跳动", "腾讯", "阿里巴巴"],
+      "question": "设计一个支持大文件断点续传的文件上传系统。",
+      "expected_points": ["文件分片", "分片上传 API", "分片合并", "断点续传", "秒传（文件哈希校验）", "上传进度管理"],
+      "follow_up_hints": ["分片大小怎么确定？", "网络抖动导致分片乱序怎么处理？", "服务端怎么保证分片完整性？"]
+    },
+    {
+      "id": "q_system_010",
+      "topic": "系统设计",
+      "sub_topic": "订单超时",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "美团", "京东"],
+      "question": "设计电商场景下未支付订单的自动取消系统，支持海量订单超时处理。",
+      "expected_points": ["定时任务扫描", "延迟消息队列", "时间轮算法", "Redis 过期监听", "分片扫描", "补偿机制"],
+      "follow_up_hints": ["定时扫描大表性能问题怎么解决？", "延迟消息和定时任务各自的优缺点？", "时间轮算法的精度和容量怎么设计？"]
+    },
+    {
+      "id": "q_concurrency_001",
+      "topic": "并发",
+      "sub_topic": "线程池",
+      "difficulty": "easy",
+      "company_tags": ["字节跳动", "阿里巴巴", "腾讯"],
+      "question": "Java 线程池的核心参数有哪些？任务提交后线程池的执行流程是什么？",
+      "expected_points": ["corePoolSize", "maximumPoolSize", "keepAliveTime", "workQueue", "拒绝策略", "线程池执行流程"],
+      "follow_up_hints": ["线程池大小怎么合理设置？", "拒绝策略有哪些？", "线程池中的异常怎么处理？"]
+    },
+    {
+      "id": "q_concurrency_002",
+      "topic": "并发",
+      "sub_topic": "锁优化",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "京东", "美团"],
+      "question": "Java 中的 synchronized 和 ReentrantLock 有什么区别？JVM 对锁有哪些优化手段？",
+      "expected_points": ["使用方式差异", "公平性支持", "可中断性", "Condition 条件变量", "锁升级过程", "偏向锁", "轻量级锁", "锁粗化", "锁消除"],
+      "follow_up_hints": ["synchronized 在 JDK 不同版本的优化？", "ReentrantLock 的 Condition 怎么用？", "读写锁适合什么场景？"]
+    },
+    {
+      "id": "q_concurrency_003",
+      "topic": "并发",
+      "sub_topic": "CompletableFuture",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "阿里巴巴", "美团"],
+      "question": "CompletableFuture 如何使用？请说明它如何处理异步任务的编排和异常。",
+      "expected_points": ["supplyAsync/runAsync", "thenCompose 链式调用", "thenCombine 并行合并", "exceptionally 异常恢复", "allOf 多任务等待"],
+      "follow_up_hints": ["与 Future 相比优势在哪？", "线程池怎么传递给 CompletableFuture？", "默认线程池 ForkJoinPool 适用场景？"]
+    },
+    {
+      "id": "q_concurrency_004",
+      "topic": "并发",
+      "sub_topic": "volatile",
+      "difficulty": "easy",
+      "company_tags": ["腾讯", "字节跳动", "京东"],
+      "question": "volatile 关键字在 Java 中能保证什么？不能保证什么？原理是什么？",
+      "expected_points": ["可见性保证", "禁止指令重排", "不保证原子性", "内存屏障", "happens-before 规则"],
+      "follow_up_hints": ["volatile 和 synchronized 的区别？", "双重检查锁定单例为什么需要 volatile？", "内存屏障有哪些类型？"]
+    },
+    {
+      "id": "q_concurrency_005",
+      "topic": "并发",
+      "sub_topic": "生产者消费者模式",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "美团", "快手"],
+      "question": "用 Java 实现一个生产者消费者模式，分别对比 Object.wait/notify 和 BlockingQueue 两种方式。",
+      "expected_points": ["wait/notify 实现", "BlockingQueue 实现", "虚假唤醒问题", "有界队列设计", "多生产者多消费者场景"],
+      "follow_up_hints": ["虚假唤醒为什么可能发生？", "ArrayBlockingQueue 和 LinkedBlockingQueue 的区别？", "怎么实现分布式生产者消费者？"]
+    },
+    {
+      "id": "q_jvm_001",
+      "topic": "JVM",
+      "sub_topic": "GC排查",
+      "difficulty": "hard",
+      "company_tags": ["字节跳动", "阿里巴巴", "美团"],
+      "question": "线上 Java 应用频繁 Full GC，如何排查和解决？请描述完整的排查思路。",
+      "expected_points": ["jstat 查看 GC 情况", "jmap 堆转储", "MAT 分析大对象", "GC 日志分析", "元空间泄漏排查", "代码级别内存泄漏定位"],
+      "follow_up_hints": ["CMS GC 和 G1 GC 各自适合什么场景？", "怎么区分是内存泄漏还是分配过大？", "Dump 文件太大怎么分析？"]
+    },
+    {
+      "id": "q_jvm_002",
+      "topic": "JVM",
+      "sub_topic": "类加载",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "腾讯", "京东"],
+      "question": "JVM 的类加载机制是什么？双亲委派模型的作用和工作流程是怎样的？",
+      "expected_points": ["加载阶段", "链接阶段", "初始化阶段", "双亲委派模型", "破坏双亲委派的场景", "自定义类加载器"],
+      "follow_up_hints": ["双亲委派模型的好处？", "Tomcat 为什么破坏双亲委派？", "SPI 机制怎么突破双亲委派？"]
+    },
+    {
+      "id": "q_jvm_003",
+      "topic": "JVM",
+      "sub_topic": "内存模型",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "字节跳动", "拼多多"],
+      "question": "Java 内存模型（JMM）是什么？它如何定义线程与主内存之间的交互？",
+      "expected_points": ["主内存与工作内存", "可见性", "原子性", "有序性", "happens-before 规则", "内存屏障"],
+      "follow_up_hints": ["JMM 和 JVM 内存区域的区别？", "哪些场景会出现可见性问题？", "happens-before 规则有哪些？"]
+    },
+    {
+      "id": "q_spring_001",
+      "topic": "Spring",
+      "sub_topic": "事务失效",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "字节跳动", "美团"],
+      "question": "Spring @Transactional 注解在哪些情况下会失效？",
+      "expected_points": ["自调用导致 AOP 失效", "非 public 方法", "异常被捕获未抛出", "抛出非 RuntimeException", "数据库引擎不支持事务", "事务传播属性设置错误"],
+      "follow_up_hints": ["自调用为什么会导致事务失效？", "怎么解决自调用的事务问题？", "REQUIRES_NEW 和 NESTED 的区别？"]
+    },
+    {
+      "id": "q_spring_002",
+      "topic": "Spring",
+      "sub_topic": "Bean生命周期",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "腾讯", "阿里巴巴"],
+      "question": "Spring Bean 的生命周期是怎样的？请从创建到销毁完整描述。",
+      "expected_points": ["实例化", "属性赋值", "各种 Aware 接口回调", "BeanPostProcessor 前置处理", "InitializingBean/init-method", "BeanPostProcessor 后置处理", "DisposableBean/destroy-method"],
+      "follow_up_hints": ["BeanPostProcessor 和 BeanFactoryPostProcessor 区别？", "循环依赖发生在上面的哪个阶段？", "AOP 代理在哪个阶段生成？"]
+    },
+    {
+      "id": "q_spring_003",
+      "topic": "Spring",
+      "sub_topic": "循环依赖",
+      "difficulty": "hard",
+      "company_tags": ["阿里巴巴", "字节跳动", "京东"],
+      "question": "Spring 如何解决循环依赖问题？三级缓存分别存储了什么？构造函数注入为什么无法解决？",
+      "expected_points": ["三级缓存结构", "提前暴露对象", "AOP 与三级缓存", "构造函数注入无法解决", "prototype 作用域循环依赖"],
+      "follow_up_hints": ["为什么是三级缓存不是两级？", "构造函数注入怎么避免循环依赖？", "@Lazy 注解怎么解决？"]
+    },
+    {
+      "id": "q_micro_001",
+      "topic": "微服务",
+      "sub_topic": "服务治理",
+      "difficulty": "medium",
+      "company_tags": ["阿里巴巴", "字节跳动", "腾讯"],
+      "question": "微服务架构中服务治理包含哪些核心组件？分别承担什么职责？",
+      "expected_points": ["服务注册与发现", "配置中心", "负载均衡", "熔断降级", "服务限流", "链路追踪", "健康检查"],
+      "follow_up_hints": ["Nacos 和 Eureka 的区别？", "服务雪崩怎么预防？", "健康检查的实现方式？"]
+    },
+    {
+      "id": "q_micro_002",
+      "topic": "微服务",
+      "sub_topic": "分布式事务",
+      "difficulty": "hard",
+      "company_tags": ["阿里巴巴", "字节跳动", "美团"],
+      "question": "微服务架构下分布式事务的解决方案有哪些？各有什么优缺点？",
+      "expected_points": ["两阶段提交 XA", "TCC 模式", "Saga 模式", "本地消息表", "最大努力通知", "Seata 框架"],
+      "follow_up_hints": ["TCC 的空回滚和悬挂问题怎么解决？", "Saga 的补偿事务怎么设计？", "什么时候用最终一致性就够了？"]
+    },
+    {
+      "id": "q_micro_003",
+      "topic": "微服务",
+      "sub_topic": "接口幂等",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "美团", "京东"],
+      "question": "如何设计幂等的 RESTful 接口？支付场景中的幂等性怎么保证？",
+      "expected_points": ["幂等 key 设计", "唯一索引去重", "乐观锁机制", "Token 机制", "状态机幂等", "支付幂等处理"],
+      "follow_up_hints": ["幂等 key 怎么生成？", "网络超时重试如何保证幂等？", "先发货还是先扣款？"]
+    },
+    {
+      "id": "q_micro_004",
+      "topic": "微服务",
+      "sub_topic": "灰度发布",
+      "difficulty": "hard",
+      "company_tags": ["字节跳动", "阿里巴巴", "腾讯", "美团"],
+      "question": "如何设计一个灰度发布系统？灰度流量路由的策略有哪些？",
+      "expected_points": ["灰度策略模型", "按用户 ID 取模", "按标签路由", "网关层灰度路由", "注册中心元数据", "灰度结果验证与回滚"],
+      "follow_up_hints": ["灰度过程中数据库变更怎么兼容？", "灰度比例怎么动态调整？", "如何验证灰度效果？"]
+    },
+    {
+      "id": "q_observe_001",
+      "topic": "可观测性",
+      "sub_topic": "链路追踪",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "阿里巴巴", "腾讯"],
+      "question": "分布式链路追踪的核心原理是什么？如何实现跨服务的 TraceId 传递？",
+      "expected_points": ["TraceId 和 SpanId", "父子 Span 关系", "HTTP 请求头传递 TraceId", "MQ 消息传递 TraceId", "异步线程传递 TraceId", "采样策略"],
+      "follow_up_hints": ["OpenTelemetry 和 Skywalking 的区别？", "采样率太高怎么降低存储成本？", "跨线程怎么传递 TraceId？"]
+    },
+    {
+      "id": "q_observe_002",
+      "topic": "可观测性",
+      "sub_topic": "告警治理",
+      "difficulty": "easy",
+      "company_tags": ["字节跳动", "美团", "快手"],
+      "question": "线上告警太多怎么办？如何设计有效的告警治理策略？",
+      "expected_points": ["告警分级", "告警规则优化", "告警聚合", "告警静默", "告警升级机制", "告警通知渠道"],
+      "follow_up_hints": ["告警风暴怎么处理？", "告警延迟怎么控制？", "如何量化告警的有效率？"]
+    },
+    {
+      "id": "q_security_001",
+      "topic": "安全",
+      "sub_topic": "接口防刷",
+      "difficulty": "easy",
+      "company_tags": ["字节跳动", "阿里巴巴", "腾讯"],
+      "question": "如何防止恶意请求刷接口？请描述常用的防刷策略。",
+      "expected_points": ["IP 限流", "用户维度限流", "验证码机制", "黑名单机制", "行为分析", "风控策略"],
+      "follow_up_hints": ["分布式场景下 IP 限流怎么实现？", "验证码对用户体验的影响？", "怎么区分正常用户和爬虫？"]
+    },
+    {
+      "id": "q_security_002",
+      "topic": "安全",
+      "sub_topic": "越权",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "阿里巴巴", "京东"],
+      "question": "什么是水平越权和垂直越权？后端如何防范越权攻击？",
+      "expected_points": ["水平越权定义", "垂直越权定义", "权限校验中间件", "用户 ID 参数校验", "RBAC 权限模型", "敏感操作日志审计"],
+      "follow_up_hints": ["RBAC 和 ABAC 的差异？", "越权漏洞怎么自动化发现？", "JWT 令牌中的权限设计？"]
+    },
+    {
+      "id": "q_project_001",
+      "topic": "项目复盘",
+      "sub_topic": "技术选型",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "阿里巴巴", "美团"],
+      "question": "在过往项目中，你是怎么做技术选型的？举一个具体的例子说明。",
+      "expected_points": ["需求分析", "技术调研", "对比维度", "POC 验证", "团队技术栈", "社区活跃度", "可维护性"],
+      "follow_up_hints": ["选型中踩过什么坑？", "开源方案和自研怎么权衡？", "选型后怎么推广落地？"]
+    },
+    {
+      "id": "q_project_002",
+      "topic": "项目复盘",
+      "sub_topic": "线上故障",
+      "difficulty": "hard",
+      "company_tags": ["字节跳动", "阿里巴巴", "腾讯"],
+      "question": "描述一次你经历过的重大线上故障，包括发现、排查、修复和复盘的全过程。",
+      "expected_points": ["故障发现机制", "快速止血方案", "根因分析", "恢复验证", "故障复盘", "改进措施"],
+      "follow_up_hints": ["故障等级怎么划分？", "怎么避免同类问题再次发生？", "On-Call 机制怎么设计？"]
+    },
+    {
+      "id": "q_project_003",
+      "topic": "项目复盘",
+      "sub_topic": "性能优化",
+      "difficulty": "hard",
+      "company_tags": ["字节跳动", "阿里巴巴", "拼多多"],
+      "question": "分享一个你做过的最有挑战性的性能优化案例，包括优化思路和实施过程。",
+      "expected_points": ["性能瓶颈定位", "压测方法", "优化前后对比", "资源消耗分析", "缓存策略优化", "SQL 优化", "架构层面优化"],
+      "follow_up_hints": ["优化后的收益怎么量化？", "有没有为了性能牺牲可读性？", "性能优化的底线在哪？"]
+    },
+    {
+      "id": "q_algorithm_001",
+      "topic": "算法",
+      "sub_topic": "TopK",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "阿里巴巴", "快手"],
+      "question": "如何在海量数据中找出出现频率最高的 TopK 个元素？分别说明精确解法和近似解法。",
+      "expected_points": ["哈希统计 + 小顶堆", "Count-Min Sketch", "Boyer-Moore 多数投票算法", "MapReduce 分治", "数据倾斜处理"],
+      "follow_up_hints": ["小顶堆为什么比大顶堆合适？", "Count-Min Sketch 的原理？", "流式场景下怎么处理？"]
+    },
+    {
+      "id": "q_algorithm_002",
+      "topic": "算法",
+      "sub_topic": "限流算法",
+      "difficulty": "easy",
+      "company_tags": ["字节跳动", "腾讯", "美团"],
+      "question": "常见的限流算法有哪些？请说明各自的原理和适用场景。",
+      "expected_points": ["计数器算法", "滑动窗口算法", "令牌桶算法", "漏桶算法", "分布式限流实现"],
+      "follow_up_hints": ["令牌桶和漏桶的适用场景差异？", "Guava RateLimiter 怎么实现的？", "分布式限流的精度问题？"]
+    },
+    {
+      "id": "q_algorithm_003",
+      "topic": "算法",
+      "sub_topic": "一致性哈希",
+      "difficulty": "medium",
+      "company_tags": ["字节跳动", "阿里巴巴", "美团"],
+      "question": "一致性哈希算法的原理是什么？如何解决数据倾斜问题？",
+      "expected_points": ["哈希环", "虚拟节点", "节点增减影响最小化", "虚拟节点解决倾斜", "哈希函数的选取"],
+      "follow_up_hints": ["一致性哈希和取模哈希的对比？", "Redis 集群的 slot 是一致性哈希吗？", "虚拟节点数量怎么确定？"]
+    }
+  ]
+}

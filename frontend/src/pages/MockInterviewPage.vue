@@ -32,6 +32,10 @@
           user_id
           <input v-model.trim="context.user_id" autocomplete="off" placeholder="user_001" />
         </label>
+        <label>
+          focus_topic
+          <input v-model.trim="context.focus_topic" autocomplete="off" placeholder="optional focus topic" @change="rememberFocusTopic" />
+        </label>
         <div class="context-actions">
           <button class="secondary" type="submit" :disabled="!canUseInterview || isLoading('mockInterviewDetail')">加载面试</button>
           <button class="primary" type="button" :disabled="!canUseInterview || isLoading('startMockInterview')" @click="startOrResumeMock">
@@ -49,6 +53,9 @@
         <div class="chat-summary-line">
           <strong>当前题目：{{ currentQuestion }}</strong>
           <span>状态：{{ mock?.status || '未开始' }}</span>
+          <span v-if="timerState.active" :class="['mock-timer', { expired: timerState.expired }]">
+            {{ timerLabel }} · {{ timerState.style }}
+          </span>
         </div>
 
         <div class="long-chat-stream">
@@ -159,7 +166,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api'
 import EmptyState from '../components/EmptyState.vue'
@@ -173,6 +180,7 @@ const context = reactive({
   plan_id: state.selectedPlanId || '',
   target_round: 'second_round',
   user_id: state.userId || 'user_001',
+  focus_topic: state.focusTopic || '',
 })
 
 const detail = ref(null)
@@ -182,6 +190,10 @@ const practiceStates = ref([])
 const practiceError = ref('')
 const answerInput = ref('')
 const evidenceOpen = ref(false)
+const nowSeconds = ref(Math.floor(Date.now() / 1000))
+const countdownInterval = ref(null)
+const checkInInterval = ref(null)
+const lastTimerCheckInTurnId = ref('')
 
 const terminalStatuses = new Set(['failed', 'completed', 'cancelled', 'canceled'])
 
@@ -203,6 +215,36 @@ const currentQuestion = computed(() => {
 const canControlMock = computed(() => Boolean(mock.value?.mock_id && !terminalStatuses.has(normalizeStatus(mock.value.status))))
 const canAnswerMock = computed(() => Boolean(mock.value?.mock_id && !terminalStatuses.has(normalizeStatus(mock.value.status))))
 const canSubmitTurn = computed(() => Boolean(canAnswerMock.value && answerInput.value.trim()))
+const latestTimedQuestionTurn = computed(() => {
+  const reversed = [...turns.value].reverse()
+  return reversed.find((turn) => {
+    return String(turn.role || '').toLowerCase() === 'assistant' && Number(turn.time_limit_seconds || 0) > 0
+  }) || null
+})
+const timerState = computed(() => {
+  const turn = latestTimedQuestionTurn.value
+  if (!turn) return { active: false }
+  const total = Number(turn.time_limit_seconds || 0)
+  const startedAt = Number(turn.created_at || 0)
+  const elapsed = Math.max(0, nowSeconds.value - startedAt)
+  const remaining = total - elapsed
+  return {
+    active: total > 0,
+    total,
+    elapsed,
+    remaining,
+    expired: remaining <= 0,
+    warnAt: Number(turn.warn_at_seconds || 300),
+    style: turn.time_pressure_style || 'none',
+  }
+})
+const timerLabel = computed(() => {
+  if (!timerState.value.active) return ''
+  const seconds = Math.max(0, timerState.value.remaining)
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return `${minutes}:${String(rest).padStart(2, '0')}`
+})
 const mockSummaryLine = computed(() => {
   const question = currentQuestion.value && currentQuestion.value !== '-' ? currentQuestion.value : '尚未开始'
   const status = mock.value?.status || '未开始'
@@ -339,6 +381,10 @@ function rememberPlan() {
   rememberSelection('selectedPlanId', context.plan_id)
 }
 
+function rememberFocusTopic() {
+  rememberSelection('focusTopic', context.focus_topic)
+}
+
 function syncMock(nextMock) {
   if (!nextMock) return
   mock.value = nextMock
@@ -387,6 +433,7 @@ async function startOrResumeMock() {
         user_id: contextUserId.value,
         plan_id: context.plan_id,
         target_round: context.target_round,
+        focus_topic: context.focus_topic,
       }),
     'Mock interview ready',
   )
@@ -489,7 +536,45 @@ watch(
   },
 )
 
+watch(
+  () => state.focusTopic,
+  (focusTopic) => {
+    if (focusTopic && !context.focus_topic) {
+      context.focus_topic = focusTopic
+    }
+  },
+)
+
+watch([() => mock.value?.status, timerState], ([status, timer]) => {
+  if (checkInInterval.value) {
+    window.clearInterval(checkInInterval.value)
+    checkInInterval.value = null
+  }
+  if (status === 'waiting_answer' && timer.active && !timer.expired && timer.elapsed >= timer.warnAt) {
+    checkInInterval.value = window.setInterval(async () => {
+      if (!mock.value?.mock_id || answerInput.value.trim() !== '') return
+      const timedTurn = latestTimedQuestionTurn.value
+      const timedTurnId = timedTurn?.turn_id || `${timedTurn?.turn_index || ''}-${timedTurn?.created_at || ''}`
+      if (!timedTurnId || lastTimerCheckInTurnId.value === timedTurnId) return
+      try {
+        await api.submitMockTurn(mock.value.mock_id, {
+          answer: '',
+          submit_mode: 'chat',
+          trigger: 'silence_timeout',
+        })
+        lastTimerCheckInTurnId.value = timedTurnId
+        await refreshTurns()
+      } catch {
+        // Silent timer check-in is best-effort; manual submit remains available.
+      }
+    }, 30000)
+  }
+}, { immediate: true })
+
 onMounted(async () => {
+  countdownInterval.value = window.setInterval(() => {
+    nowSeconds.value = Math.floor(Date.now() / 1000)
+  }, 1000)
   if (context.interview_id) {
     try {
       await loadInterview()
@@ -506,6 +591,11 @@ onMounted(async () => {
     await loadPracticeStates()
   }
 })
+
+onBeforeUnmount(() => {
+  if (countdownInterval.value) window.clearInterval(countdownInterval.value)
+  if (checkInInterval.value) window.clearInterval(checkInInterval.value)
+})
 </script>
 
 <style scoped>
@@ -513,7 +603,7 @@ onMounted(async () => {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .context-actions,
@@ -521,6 +611,16 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.mock-timer {
+  color: #526070;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.mock-timer.expired {
+  color: #b42318;
 }
 
 .context-actions {

@@ -2,6 +2,7 @@ export async function apiRequest(path, options = {}) {
   const init = {
     method: options.method || 'GET',
     headers: options.body ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers,
+    ...(options.signal ? { signal: options.signal } : {}),
   }
 
   if (options.body) {
@@ -127,8 +128,8 @@ export const api = {
   listMockTurns(mockId) {
     return apiRequest(`/api/mock-interviews/${mockId}/turns`)
   },
-  submitMockTurn(mockId, body) {
-    return apiRequest(`/api/mock-interviews/${mockId}/turns`, { method: 'POST', body })
+  submitMockTurn(mockId, body, options = {}) {
+    return apiRequest(`/api/mock-interviews/${mockId}/turns`, { method: 'POST', body, ...options })
   },
   completeMockInterview(mockId) {
     return apiRequest(`/api/mock-interviews/${mockId}/complete`, { method: 'POST' })

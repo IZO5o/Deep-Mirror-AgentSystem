@@ -531,6 +531,7 @@ func TestMockTurnContextIncludesPersistentState(t *testing.T) {
 		},
 		mock,
 		"请讲一下限流设计。",
+		TimerResult{},
 	)
 
 	wantSection := buildPersistentStatePromptSection("mock", persistentStateValue(mock.AgentPersistentState))
@@ -975,6 +976,80 @@ func TestSubmitMockTurnPracticeStateFailureRollsBackTurns(t *testing.T) {
 	}
 	if got.CurrentTurn != 0 || got.Status != MockInterviewStatusWaitingAnswer {
 		t.Fatalf("mock = %#v, want unchanged active state", got)
+	}
+}
+
+func TestMockStartPersistsQuestionTimerFields(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runners[agent.AgentTypeMockInterviewer].taskResponse = `{"overall_goal":"系统设计","first_question":"设计短链系统。","time_limit_seconds":900,"time_pressure_style":"moderate","warn_at_seconds":300}`
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{UserID: "user_001", PlanID: planID})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	turns, err := s.loadMockTurns(mock.MockID)
+	if err != nil {
+		t.Fatalf("loadMockTurns() error = %v", err)
+	}
+	if len(turns) == 0 || turns[0].TimeLimitSeconds != 900 || turns[0].TimePressureStyle != TimePressureStyleModerate || turns[0].WarnAtSeconds != 300 {
+		t.Fatalf("opening timer fields missing/wrong. turn=%+v", turns[0])
+	}
+	voTurns, err := s.ListMockTurns(mock.MockID)
+	if err != nil {
+		t.Fatalf("ListMockTurns() error = %v", err)
+	}
+	if len(voTurns) == 0 || voTurns[0].TimeLimitSeconds != 900 || voTurns[0].TimePressureStyle != TimePressureStyleModerate || voTurns[0].WarnAtSeconds != 300 {
+		t.Fatalf("opening timer fields missing from VO. turn=%+v", voTurns[0])
+	}
+}
+
+func TestSubmitMockTurnSilenceTimeoutCreatesChatOnlyPrompt(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runners[agent.AgentTypeMockInterviewer].taskResponses = []string{
+		`{"overall_goal":"限时系统设计","first_question":"设计一个 feed 系统。","time_limit_seconds":900,"time_pressure_style":"moderate","warn_at_seconds":300}`,
+		`{"visible_message":"我们先收束一下，请你用两句话总结核心设计。","user_intent":"unclear","state_action":"chat_only","reasoning_trace":"用户长时间未输入。","next_action":"wait_for_answer"}`,
+	}
+	mock, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{UserID: "user_001", PlanID: planID})
+	if err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	turn, err := s.SubmitMockTurn(context.Background(), mock.MockID, vo.SubmitMockTurnReq{Answer: "", SubmitMode: mockSubmitModeChat, Trigger: mockTurnTriggerSilenceTimeout})
+	if err != nil {
+		t.Fatalf("SubmitMockTurn() silence error = %v", err)
+	}
+	if turn.Score != 0 || turn.AgentAction != mockStateActionChatOnly {
+		t.Fatalf("silence turn score=%d action=%s, want 0/chat_only", turn.Score, turn.AgentAction)
+	}
+	if len(runners[agent.AgentTypeMockInterviewer].contextQueries) == 0 {
+		t.Fatalf("mock runner missing context query")
+	}
+	query := runners[agent.AgentTypeMockInterviewer].contextQueries[len(runners[agent.AgentTypeMockInterviewer].contextQueries)-1]
+	if !strings.Contains(query, mockTurnTriggerSilenceTimeout) {
+		t.Fatalf("silence query missing trigger: %s", query)
+	}
+}
+
+func TestMockStartIncludesQuestionBankResultsForFocusTopic(t *testing.T) {
+	s, runners := newTestServerWithFakeAgents(t)
+	session, planID := createMockReadyInterview(t, s, runners)
+	runners[agent.AgentTypeMockInterviewer].taskResponse = sampleMockStartJSON()
+	if _, err := s.StartMockInterview(context.Background(), session.InterviewID, vo.StartMockInterviewReq{
+		UserID:      "user_001",
+		PlanID:      planID,
+		TargetRound: "second_round",
+		FocusTopic:  "Redis 分布式锁",
+	}); err != nil {
+		t.Fatalf("StartMockInterview() error = %v", err)
+	}
+	if len(runners[agent.AgentTypeMockInterviewer].taskQueries) == 0 {
+		t.Fatalf("mock runner missing start prompt")
+	}
+	prompt := runners[agent.AgentTypeMockInterviewer].taskQueries[len(runners[agent.AgentTypeMockInterviewer].taskQueries)-1]
+	for _, want := range []string{"=== 可选练习题 ===", "q_redis_001", "expected_points"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("mock start prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 

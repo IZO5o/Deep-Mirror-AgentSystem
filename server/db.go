@@ -316,6 +316,9 @@ type MockTurn struct {
 	Feedback            string
 	Score               int
 	FollowUpReason      string
+	TimeLimitSeconds    int
+	TimePressureStyle   string
+	WarnAtSeconds       int
 	TopicTags           string
 	NextQuestion        string
 	RawAgentOutput      string
