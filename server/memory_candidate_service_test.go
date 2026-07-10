@@ -102,6 +102,28 @@ func TestGenerateMemoryCandidatesParseFailureDoesNotWriteCandidates(t *testing.T
 	}
 }
 
+func TestParseMemoryCuratorOutputAcceptsBareCandidateArray(t *testing.T) {
+	parsed, err := parseMemoryCuratorOutput(`[
+  {
+    "memory_type": "user_weakness",
+    "subject_key": "user:user_001",
+    "content": "Needs deeper architecture detail.",
+    "evidence": "Mock feedback asked for more implementation depth.",
+    "confidence": "high",
+    "source": "mock_interview"
+  }
+]`)
+	if err != nil {
+		t.Fatalf("parseMemoryCuratorOutput() error = %v", err)
+	}
+	if len(parsed.Candidates) != 1 {
+		t.Fatalf("candidates length = %d, want 1", len(parsed.Candidates))
+	}
+	if parsed.Candidates[0].Source != MemorySourceMockInterview {
+		t.Fatalf("source = %q, want %q", parsed.Candidates[0].Source, MemorySourceMockInterview)
+	}
+}
+
 func TestGenerateMemoryCandidatesFiltersPrivateInterviewerSignals(t *testing.T) {
 	s, runners := newTestServerWithFakeAgents(t)
 	session := createMemoryReadyInterview(t, s, runners)

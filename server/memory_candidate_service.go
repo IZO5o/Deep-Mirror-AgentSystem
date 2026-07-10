@@ -1293,7 +1293,11 @@ func parseMemoryCuratorOutput(raw string) (memoryCuratorOutput, error) {
 	cleaned := stripJSONFence(strings.TrimSpace(raw))
 	var parsed memoryCuratorOutput
 	if err := json.Unmarshal([]byte(cleaned), &parsed); err != nil {
-		return memoryCuratorOutput{}, fmt.Errorf("parse memory curator JSON: %w", err)
+		var candidates []memoryCandidateOutput
+		if arrayErr := json.Unmarshal([]byte(cleaned), &candidates); arrayErr != nil {
+			return memoryCuratorOutput{}, fmt.Errorf("parse memory curator JSON: %w", err)
+		}
+		parsed.Candidates = candidates
 	}
 	if parsed.Candidates == nil {
 		parsed.Candidates = []memoryCandidateOutput{}
